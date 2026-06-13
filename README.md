@@ -44,8 +44,8 @@ fast, reproducible dependency management.
 
 ```bash
 # In a Colab cell:
-!git clone https://github.com/<your-username>/dubbing-pipeline-repo.git
-%cd dubbing-pipeline-repo
+!git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
+%cd ai-dubbing-pipeline-colab
 !bash setup_colab.sh
 
 # Add your creds/google_tts_service_account.json and create .env (see below),
@@ -56,8 +56,8 @@ fast, reproducible dependency management.
 ### Local
 
 ```bash
-git clone https://github.com/<your-username>/dubbing-pipeline-repo.git
-cd dubbing-pipeline-repo
+git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
+cd ai-dubbing-pipeline-colab
 
 # Using uv (recommended)
 uv venv && source .venv/bin/activate
