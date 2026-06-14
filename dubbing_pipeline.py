@@ -81,6 +81,26 @@ def _make_tts_client():
 
 
 # --------------------------------------------------------------------------- #
+# Device helpers
+# --------------------------------------------------------------------------- #
+def _resolve_device(requested):
+    """Return the best available device, falling back to CPU if CUDA is unusable."""
+    if requested != "cuda":
+        return requested
+    try:
+        import torch  # noqa: PLC0415
+        if not torch.cuda.is_available():
+            print("[WARNING] CUDA not available — falling back to CPU (slower).")
+            return "cpu"
+        # Trigger a real CUDA call to catch driver/runtime version mismatches.
+        torch.zeros(1).cuda()
+        return "cuda"
+    except Exception as e:
+        print(f"[WARNING] CUDA unusable ({e})\nFalling back to CPU (slower).")
+        return "cpu"
+
+
+# --------------------------------------------------------------------------- #
 # 1. Media acquisition & audio extraction
 # --------------------------------------------------------------------------- #
 def download_vimeo(url, output_path):
@@ -500,6 +520,8 @@ def main():
                         help="Force a maximum speaker count (speaker range forcing)")
     args = parser.parse_args()
 
+    device = _resolve_device(args.device)
+
     os.makedirs(args.output_dir, exist_ok=True)
     video_file = os.path.join(args.output_dir, "input_video.mp4")
 
@@ -513,7 +535,7 @@ def main():
 
     segments = transcribe_with_whisperx(
         audio_wav,
-        device=args.device,
+        device=device,
         model_name=args.model,
         batch_size=args.batch_size,
         hf_token=_get_secret("HF_TOKEN"),
