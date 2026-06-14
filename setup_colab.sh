@@ -3,38 +3,30 @@
 # setup_colab.sh
 # --------------
 # One-shot environment bootstrap for Google Colab (free tier).
-# Installs system deps (ffmpeg), the uv package manager, creates the project
-# folder layout and syncs Python dependencies into a uv-managed virtualenv.
+# Installs system deps (ffmpeg) and syncs Python dependencies.
+#
+# On Colab: installs directly into Colab's managed Python via pip (no venv
+# needed — the Colab runtime is already isolated per session).
+# On a local machine: if a .venv already exists it is used; otherwise packages
+# are installed into the active environment via pip.
 #
 # Usage (inside a Colab cell):
 #   !bash setup_colab.sh
 #
 set -e
 
-echo "==> Initializing environment..."
-apt-get update && apt-get install -y ffmpeg git curl
-
-echo "==> Installing uv (fast Python package manager)..."
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# uv installs to ~/.cargo/env or ~/.local/bin depending on version.
-source "$HOME/.cargo/env" 2>/dev/null || export PATH="$HOME/.local/bin:$PATH"
+echo "==> Installing system dependencies..."
+apt-get update -qq && apt-get install -y -qq ffmpeg git curl
 
 echo "==> Creating project structure..."
 mkdir -p inputs outputs
 
-echo "==> Creating virtualenv and syncing dependencies..."
-uv venv
-source .venv/bin/activate
-uv pip install \
-    whisperx==3.8.6 \
-    google-genai==2.8.0 \
-    google-cloud-texttospeech==2.36.0 \
-    python-dotenv==1.0.1 \
-    pydub==0.25.1 \
-    "librosa>=0.10" \
-    soundfile==0.13.1 \
-    yt-dlp \
-    tqdm
+echo "==> Installing Python dependencies..."
+# Activate local venv if present (local dev), otherwise use Colab's pip.
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
+pip install -r requirements.txt
 
 echo ""
 echo "==> Setup complete."

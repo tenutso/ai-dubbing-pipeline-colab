@@ -130,21 +130,22 @@ python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
    !bash setup_colab.sh
    ```
 
-   `setup_colab.sh` installs `ffmpeg`, installs `uv`, creates the
-   `dubbing/{creds,inputs,outputs}` layout and syncs all dependencies into a
-   uv-managed virtualenv.
+   `setup_colab.sh` installs `ffmpeg` and all Python dependencies directly
+   into Colab's managed Python environment via `pip` (no virtualenv needed —
+   Colab's runtime is already isolated per session).
 
 3. Upload your credentials and create `.env`:
 
    ```python
    from google.colab import files
-   files.upload()   # upload google_tts_service_account.json → move it to creds/
+   uploaded = files.upload()   # upload google_tts_service_account.json
+   !mv google_tts_service_account.json creds/
    ```
 
    ```python
    %%writefile .env
    GEMINI_API_KEY=AIza...
-   GEMINI_MODEL=gemini-1.5-flash
+   GEMINI_MODEL=gemini-2.0-flash
    HF_TOKEN=hf_...
    GOOGLE_APPLICATION_CREDENTIALS=./creds/google_tts_service_account.json
    DEFAULT_TTS_LANG=fr-CA

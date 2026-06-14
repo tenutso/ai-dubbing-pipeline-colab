@@ -23,4 +23,6 @@ if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
 fi
 
-python dubbing_pipeline.py "$@"
+# Prefer the venv python, then python3, then python.
+PYTHON=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+"$PYTHON" dubbing_pipeline.py "$@"
