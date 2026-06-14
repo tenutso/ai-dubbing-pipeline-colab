@@ -7,9 +7,8 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)
 ![Colab](https://img.shields.io/badge/Google%20Colab-ready-F9AB00?logo=googlecolab&logoColor=white)
-![Package manager: uv](https://img.shields.io/badge/deps-uv-261230?logo=astral&logoColor=white)
 ![WhisperX](https://img.shields.io/badge/STT-WhisperX-orange.svg)
-![Gemini](https://img.shields.io/badge/translation-Gemini-4285F4?logo=google&logoColor=white)
+![Gemini](https://img.shields.io/badge/translation-Gemini%202.0-4285F4?logo=google&logoColor=white)
 ![Google TTS](https://img.shields.io/badge/TTS-Google%20Cloud-EA4335?logo=googlecloud&logoColor=white)
 
 ---
@@ -22,8 +21,8 @@ French, and produces a fully dubbed video where each on-screen speaker is matche
 to a distinct, tonally-appropriate synthetic voice.
 
 It is engineered to fit within the memory and time constraints of the **free
-Google Colab GPU tier**, and uses [`uv`](https://github.com/astral-sh/uv) for
-fast, reproducible dependency management.
+Google Colab GPU tier**. On Colab, credentials are loaded automatically from
+**Colab Secrets** — no file uploads or `.env` files required.
 
 ## ✨ Features
 
@@ -31,7 +30,7 @@ fast, reproducible dependency management.
 - 🗣️ **Speech-to-text + alignment** with [WhisperX](https://github.com/m-bain/whisperX) for accurate word-level timestamps.
 - 👥 **Speaker diarization** via pyannote — automatically separates multiple speakers.
 - 🎚️ **Tone-based voice matching** — analyzes pitch, RMS energy and rate of speech to pick a fitting Google TTS voice per speaker.
-- 🇫🇷 **OQLF French translation** powered by Google Gemini, with optional custom glossary.
+- 🇫🇷 **OQLF French translation** powered by Google Gemini 2.0, with optional custom glossary.
 - 🔊 **Natural dub mixing** — original audio is ducked and the synthesized track is overlaid in sync.
 - 📝 **SRT subtitles** generated automatically, labeled per speaker.
 - 🎞️ **Final muxed MP4** with the dubbed audio track.
@@ -42,7 +41,7 @@ fast, reproducible dependency management.
 
 ### Google Colab (recommended)
 
-Add the following to **Colab Secrets** (the 🔑 key icon in the left sidebar) before running:
+**Step 1 — Add credentials to Colab Secrets** (🔑 key icon in the left sidebar):
 
 | Secret name | Value |
 |-------------|-------|
@@ -50,7 +49,9 @@ Add the following to **Colab Secrets** (the 🔑 key icon in the left sidebar) b
 | `HF_TOKEN` | Your Hugging Face access token |
 | `GOOGLE_TTS_API_KEY` | Your Google Cloud TTS API key |
 
-Then in a notebook:
+Secrets are stored in your Google account and reused across sessions — you only set them once.
+
+**Step 2 — Run in a notebook** (GPU runtime recommended):
 
 ```python
 # Cell 1 — clone & install
@@ -58,7 +59,7 @@ Then in a notebook:
 %cd ai-dubbing-pipeline-colab
 !bash setup_colab.sh
 
-# Cell 2 — run (secrets are loaded automatically)
+# Cell 2 — run (secrets are loaded automatically, no .env needed)
 !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
 ```
 
@@ -75,46 +76,43 @@ uv pip install -r requirements.txt
 # ...or plain pip
 pip install -r requirements.txt
 
-cp .env.example .env   # then edit .env with your keys
-python dubbing_pipeline.py --input path/to/video.mp4
+cp .env.example .env   # fill in your three API keys
+python3 dubbing_pipeline.py --input path/to/video.mp4
 ```
 
 > ⚠️ A CUDA GPU is strongly recommended. For CPU-only runs pass `--device cpu`
 > and expect significantly slower transcription.
 
-## 🔧 Installation
+## 🔧 Credentials
 
-You need three credentials (all have free tiers):
+You need three API keys (all have free tiers):
 
 | Service | Purpose | Where to get it |
 |---------|---------|-----------------|
 | **Gemini API key** | Translation | https://aistudio.google.com/apikey |
 | **Hugging Face token** | Speaker diarization | https://huggingface.co/settings/tokens |
-| **Google Cloud TTS API key** | Voice synthesis | https://console.cloud.google.com → APIs & Services → Credentials |
+| **Google Cloud TTS API key** | Voice synthesis | Google Cloud Console → APIs & Services → Credentials |
 
-Then create your environment file:
+- **On Colab:** add them to Colab Secrets (see Quick Start above) — no files needed.
+- **Locally:** copy `.env.example` to `.env` and fill in the values.
 
-```bash
-cp .env.example .env
-```
-
-and fill in the values. Full step-by-step instructions (including accepting the
-pyannote model license and enabling the TTS API) are in **[docs/SETUP.md](docs/SETUP.md)**.
+Full step-by-step instructions (including accepting the pyannote model license
+and enabling the TTS API) are in **[docs/SETUP.md](docs/SETUP.md)**.
 
 ## 💻 Basic Usage
 
 ```bash
 # Local MP4 → French dub
-python dubbing_pipeline.py --input inputs/interview.mp4
+python3 dubbing_pipeline.py --input inputs/interview.mp4
 
 # Vimeo URL with a custom OQLF glossary
-python dubbing_pipeline.py \
+python3 dubbing_pipeline.py \
     --input https://vimeo.com/123456789 \
     --glossary examples/oqlf_glossary.txt \
     --output_dir outputs/
 
-# Force exactly two speakers, use a larger model
-python dubbing_pipeline.py --input clip.mp4 --min_speakers 2 --max_speakers 2 --model medium
+# Force exactly two speakers, use a larger Whisper model
+python3 dubbing_pipeline.py --input clip.mp4 --min_speakers 2 --max_speakers 2 --model medium
 ```
 
 Outputs are written to `--output_dir` (default `outputs/`):
@@ -131,7 +129,7 @@ See **[docs/USAGE.md](docs/USAGE.md)** for every CLI flag and advanced workflows
 
 ## 📚 Documentation
 
-- 📦 **[Setup Guide](docs/SETUP.md)** — API keys, credentials, local & Colab install.
+- 📦 **[Setup Guide](docs/SETUP.md)** — API keys, Colab Secrets, local & Colab install.
 - 🛠️ **[Usage Guide](docs/USAGE.md)** — CLI options, advanced options, outputs, workflows.
 - 🏗️ **[Architecture](docs/ARCHITECTURE.md)** — pipeline flow, components, design decisions.
 - 🧪 **[Examples](examples/README.md)** — sample glossary and how to use it.
@@ -153,4 +151,4 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 ---
 
-<sub>Built with WhisperX · Google Gemini · Google Cloud Text-to-Speech · uv</sub>
+<sub>Built with WhisperX · Google Gemini 2.0 · Google Cloud Text-to-Speech</sub>
