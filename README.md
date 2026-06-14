@@ -42,25 +42,23 @@ fast, reproducible dependency management.
 
 ### Google Colab (recommended)
 
+Add the following to **Colab Secrets** (the 🔑 key icon in the left sidebar) before running:
+
+| Secret name | Value |
+|-------------|-------|
+| `GEMINI_API_KEY` | Your Google AI Studio key |
+| `HF_TOKEN` | Your Hugging Face access token |
+| `GOOGLE_TTS_API_KEY` | Your Google Cloud TTS API key |
+
+Then in a notebook:
+
 ```python
-# Cell 1 — clone & install (installs ffmpeg + Python deps via pip)
+# Cell 1 — clone & install
 !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
 %cd ai-dubbing-pipeline-colab
 !bash setup_colab.sh
 
-# Cell 2 — upload credentials and write .env
-from google.colab import files
-uploaded = files.upload()          # upload google_tts_service_account.json
-!mv google_tts_service_account.json creds/
-
-# Cell 3 — create .env (fill in your keys)
-%%writefile .env
-GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.0-flash
-HF_TOKEN=your_hf_token_here
-GOOGLE_APPLICATION_CREDENTIALS=./creds/google_tts_service_account.json
-
-# Cell 4 — run
+# Cell 2 — run (secrets are loaded automatically)
 !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
 ```
 
@@ -92,7 +90,7 @@ You need three credentials (all have free tiers):
 |---------|---------|-----------------|
 | **Gemini API key** | Translation | https://aistudio.google.com/apikey |
 | **Hugging Face token** | Speaker diarization | https://huggingface.co/settings/tokens |
-| **Google Cloud TTS service account** | Voice synthesis | https://console.cloud.google.com |
+| **Google Cloud TTS API key** | Voice synthesis | https://console.cloud.google.com → APIs & Services → Credentials |
 
 Then create your environment file:
 

@@ -35,10 +35,38 @@ from pydub import AudioSegment
 
 import whisperx
 from google import genai
+from google.api_core.client_options import ClientOptions
 from google.cloud import texttospeech
 
 # Load environment variables from a local .env file (if present).
 load_dotenv()
+
+
+# --------------------------------------------------------------------------- #
+# Credential helpers — Colab secrets → env vars → .env fallback
+# --------------------------------------------------------------------------- #
+def _get_secret(name, default=None):
+    """Return a secret, preferring Colab userdata over environment variables."""
+    try:
+        from google.colab import userdata  # noqa: PLC0415
+        val = userdata.get(name)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
+def _make_tts_client():
+    """Create a TextToSpeechClient authenticated via API key."""
+    api_key = _get_secret("GOOGLE_TTS_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GOOGLE_TTS_API_KEY is not set. Add it to Colab Secrets or your .env file."
+        )
+    return texttospeech.TextToSpeechClient(
+        client_options=ClientOptions(api_key=api_key)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -246,7 +274,7 @@ def assign_voices_and_prosody(profiles, tts_client, language_code="fr-CA"):
 # --------------------------------------------------------------------------- #
 def translate_batch_with_gemini(texts, glossary_text=""):
     """Translate a list of strings to OQLF French, preserving list order."""
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    client = genai.Client(api_key=_get_secret("GEMINI_API_KEY"))
     prompt = (
         "Translate the following strings of video transcript into French "
         "(OQLF standard). Maintain the JSON list format and order exactly. "
@@ -255,7 +283,7 @@ def translate_batch_with_gemini(texts, glossary_text=""):
     )
 
     response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        model=_get_secret("GEMINI_MODEL", "gemini-2.0-flash"),
         contents=prompt,
         config={"response_mime_type": "application/json"},
     )
@@ -377,8 +405,8 @@ def main():
     parser.add_argument("--input", required=True, help="Path to MP4 file or a Vimeo URL")
     parser.add_argument("--output_dir", default="outputs", help="Directory for outputs")
     parser.add_argument("--glossary", help="Path to an OQLF glossary text file")
-    parser.add_argument("--lang", default=os.getenv("DEFAULT_TTS_LANG", "fr-CA"), help="Target TTS language code")
-    parser.add_argument("--model", default=os.getenv("WHISPER_MODEL", "small"), help="WhisperX model size")
+    parser.add_argument("--lang", default=_get_secret("DEFAULT_TTS_LANG", "fr-CA"), help="Target TTS language code")
+    parser.add_argument("--model", default=_get_secret("WHISPER_MODEL", "small"), help="WhisperX model size")
     parser.add_argument("--device", default="cuda", help="cuda or cpu")
     parser.add_argument("--batch_size", type=int, default=8, help="WhisperX batch size")
     parser.add_argument("--min_speakers", type=int, default=None,
@@ -403,14 +431,14 @@ def main():
         device=args.device,
         model_name=args.model,
         batch_size=args.batch_size,
-        hf_token=os.getenv("HF_TOKEN"),
+        hf_token=_get_secret("HF_TOKEN"),
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
     )
     utterances = merge_segments_to_utterances(segments)
 
     profiles = build_speaker_profiles(utterances, audio_wav)
-    tts_client = texttospeech.TextToSpeechClient()
+    tts_client = _make_tts_client()
     speaker_configs = assign_voices_and_prosody(profiles, tts_client, args.lang)
 
     utterances = translate_utterances(utterances, args.glossary)

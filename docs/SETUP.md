@@ -10,10 +10,10 @@ the pipeline both **locally** and on **Google Colab**.
 - Python **3.10+**
 - [`ffmpeg`](https://ffmpeg.org/) on your `PATH`
 - A CUDA-capable GPU (strongly recommended; Colab provides one for free)
-- Three API credentials (all free-tier friendly):
+- Three API credentials (all have free tiers):
   1. A **Gemini API key** (translation)
   2. A **Hugging Face token** (speaker diarization)
-  3. A **Google Cloud Text-to-Speech service-account JSON** (voice synthesis)
+  3. A **Google Cloud TTS API key** (voice synthesis)
 
 ---
 
@@ -39,18 +39,16 @@ WhisperX uses the **pyannote** diarization models, which are gated.
 4. Without accepting these licenses, diarization will fail and all audio will be
    attributed to a single speaker (`SPEAKER_00`).
 
-### 2.3 Google Cloud Text-to-Speech Service Account
+### 2.3 Google Cloud TTS API Key
 
 1. Open the **[Google Cloud Console](https://console.cloud.google.com)** and
    create (or select) a project.
 2. Enable the **Cloud Text-to-Speech API**:
    *APIs & Services → Library → search "Text-to-Speech" → Enable*.
-3. Create a service account:
-   *IAM & Admin → Service Accounts → Create service account*.
-   Grant it the **Cloud Text-to-Speech User** role (or Editor for testing).
-4. Create a **JSON key** for that service account and download it.
-5. Place the file in the repo at `creds/google_tts_service_account.json`
-   (the `creds/` folder is git-ignored).
+3. Create an API key:
+   *APIs & Services → Credentials → Create Credentials → API key*.
+4. (Recommended) Restrict the key to the **Cloud Text-to-Speech API** only.
+5. Copy the key — it goes in `.env` as `GOOGLE_TTS_API_KEY` or in Colab Secrets.
 
 ---
 
@@ -64,15 +62,14 @@ cp .env.example .env
 
 ```env
 GEMINI_API_KEY=AIza...your_key...
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.0-flash
 HF_TOKEN=hf_...your_token...
-GOOGLE_APPLICATION_CREDENTIALS=./creds/google_tts_service_account.json
+GOOGLE_TTS_API_KEY=AIza...your_tts_key...
 DEFAULT_TTS_LANG=fr-CA
 WHISPER_MODEL=small
 ```
 
-> 🔒 `.env` and everything under `creds/` are excluded by `.gitignore` — never
-> commit your secrets.
+> 🔒 `.env` is excluded by `.gitignore` — never commit your secrets.
 
 ---
 
@@ -120,13 +117,29 @@ python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
 
 ## 5. Google Colab Setup
 
+### 5.1 Add Colab Secrets (one-time, per account)
+
+Open the **🔑 Secrets** panel in the Colab left sidebar and add:
+
+| Secret name | Value |
+|-------------|-------|
+| `GEMINI_API_KEY` | Your Google AI Studio API key |
+| `HF_TOKEN` | Your Hugging Face access token |
+| `GOOGLE_TTS_API_KEY` | Your Google Cloud TTS API key |
+
+Secrets are stored in your Google account and reused across sessions — you
+only need to do this once.
+
+### 5.2 Run the pipeline
+
 1. Open a new Colab notebook and set the runtime to **GPU**
    (*Runtime → Change runtime type → T4 GPU*).
-2. Clone the repo and run the bootstrap script:
+
+2. Clone the repo and install dependencies:
 
    ```python
-   !git clone https://github.com/<your-username>/dubbing-pipeline-repo.git
-   %cd dubbing-pipeline-repo
+   !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
+   %cd ai-dubbing-pipeline-colab
    !bash setup_colab.sh
    ```
 
@@ -134,35 +147,30 @@ python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
    into Colab's managed Python environment via `pip` (no virtualenv needed —
    Colab's runtime is already isolated per session).
 
-3. Upload your credentials and create `.env`:
+3. Run the pipeline — secrets are loaded automatically:
+
+   ```python
+   !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
+   ```
+
+4. Download the results from `outputs/` via the Colab file browser, or:
 
    ```python
    from google.colab import files
-   uploaded = files.upload()   # upload google_tts_service_account.json
-   !mv google_tts_service_account.json creds/
+   files.download('outputs/final_dubbed_video.mp4')
    ```
+
+### 5.3 Optional — override with a `.env` file
+
+If you prefer not to use Colab Secrets, you can still create a `.env` file
+manually and it will take precedence:
 
    ```python
    %%writefile .env
    GEMINI_API_KEY=AIza...
    GEMINI_MODEL=gemini-2.0-flash
    HF_TOKEN=hf_...
-   GOOGLE_APPLICATION_CREDENTIALS=./creds/google_tts_service_account.json
-   DEFAULT_TTS_LANG=fr-CA
-   WHISPER_MODEL=small
-   ```
-
-4. Run the pipeline:
-
-   ```python
-   !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
-   ```
-
-5. Download the results from `outputs/` via the Colab file browser, or:
-
-   ```python
-   from google.colab import files
-   files.download('outputs/final_dubbed_video.mp4')
+   GOOGLE_TTS_API_KEY=AIza...
    ```
 
 ---
@@ -174,8 +182,8 @@ python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
 | All lines attributed to `SPEAKER_00` | `HF_TOKEN` missing/invalid, or pyannote licenses not accepted (see §2.2). |
 | `CUDA out of memory` | Use a smaller `--model` (e.g. `small`), lower `--batch_size`, or restart the runtime. |
 | `ffmpeg: command not found` | Install ffmpeg (see §4). On Colab, `setup_colab.sh` handles it. |
-| `403 / PermissionDenied` from TTS | TTS API not enabled, or service account lacks the Text-to-Speech role. |
-| `google.auth ... could not automatically determine credentials` | `GOOGLE_APPLICATION_CREDENTIALS` path is wrong or the JSON is missing. |
+| `403 / PermissionDenied` from TTS | TTS API not enabled on the project, or the API key is restricted to a different API. |
+| `GOOGLE_TTS_API_KEY is not set` | Add the key to Colab Secrets or your `.env` file. |
 | Gemini `quota`/`429` errors | You hit the free-tier rate limit; wait and retry or switch `GEMINI_MODEL`. |
 | Vimeo download fails | Update `yt-dlp` (`uv pip install -U yt-dlp`); some videos are private/region-locked. |
 

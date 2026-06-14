@@ -13,6 +13,9 @@
 
 # Stability / performance tuning for Colab GPUs.
 export MPLBACKEND=Agg
+# Suppress SyntaxWarnings from pydub (invalid escape sequences in its regex
+# strings — a known pydub 0.25.1 issue under Python 3.12, not our code).
+export PYTHONWARNINGS="ignore::SyntaxWarning:pydub"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 export HF_HOME="${HF_HOME:-$PWD/cache/hf}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$PWD/cache}"
