@@ -54,12 +54,15 @@ def _get_secret(name, default=None):
             if val:
                 return val
         except userdata.SecretNotFoundError:
-            pass  # not in Colab Secrets — fall through to env var
+            pass  # secret not defined — fall through to env var
         except userdata.NotebookAccessError:
             print(
-                f"[WARNING] Colab Secret '{name}' exists but notebook access is disabled. "
+                f"[WARNING] Colab Secret '{name}' has notebook access disabled. "
                 "Open the 🔑 Secrets panel and toggle the switch next to it."
             )
+        except Exception:
+            # No IPython kernel (e.g. subprocess) — fall through to os.getenv().
+            pass
     except ImportError:
         pass  # not running in Colab
     return os.getenv(name, default)

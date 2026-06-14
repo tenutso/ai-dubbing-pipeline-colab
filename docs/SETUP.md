@@ -147,13 +147,26 @@ only need to do this once.
    into Colab's managed Python environment via `pip` (no virtualenv needed —
    Colab's runtime is already isolated per session).
 
-3. Run the pipeline — secrets are loaded automatically:
+3. Inject secrets into the session environment:
+
+   ```python
+   # Colab Secrets are only reachable from the notebook kernel, not bash
+   # subprocesses. Setting os.environ here propagates them to all subsequent
+   # ! commands in this session.
+   from google.colab import userdata
+   import os
+   os.environ['GEMINI_API_KEY']     = userdata.get('GEMINI_API_KEY')
+   os.environ['HF_TOKEN']           = userdata.get('HF_TOKEN')
+   os.environ['GOOGLE_TTS_API_KEY'] = userdata.get('GOOGLE_TTS_API_KEY')
+   ```
+
+4. Run the pipeline:
 
    ```python
    !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
    ```
 
-4. Download the results from `outputs/` via the Colab file browser, or:
+5. Download the results from `outputs/` via the Colab file browser, or:
 
    ```python
    from google.colab import files

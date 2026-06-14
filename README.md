@@ -61,7 +61,19 @@ Secrets are stored in your Google account and reused across sessions — you onl
 ```
 
 ```python
-# Cell 2 — run (run_dub.sh reads your Colab Secrets automatically)
+# Cell 2 — inject secrets into the session environment
+# Colab Secrets are only accessible from the notebook kernel, not from bash
+# subprocesses. Setting os.environ here makes them available to all subsequent
+# ! commands in this session.
+from google.colab import userdata
+import os
+os.environ['GEMINI_API_KEY']     = userdata.get('GEMINI_API_KEY')
+os.environ['HF_TOKEN']           = userdata.get('HF_TOKEN')
+os.environ['GOOGLE_TTS_API_KEY'] = userdata.get('GOOGLE_TTS_API_KEY')
+```
+
+```python
+# Cell 3 — run
 !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
 ```
 
