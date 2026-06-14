@@ -1,0 +1,23 @@
+# Secrets & credentials
+.env
+creds/
+!creds/.gitkeep
+
+# Runtime outputs & cache
+outputs/
+inputs/
+cache/
+temp_*.wav
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Editor / OS
+.DS_Store
+*.swp

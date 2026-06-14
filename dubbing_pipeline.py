@@ -24,10 +24,10 @@ import os
 import argparse
 import json
 import subprocess
+import tempfile
 from datetime import timedelta
 
 import librosa
-import soundfile as sf  # noqa: F401  (imported for completeness / optional I/O)
 import numpy as np
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -36,7 +36,6 @@ from pydub import AudioSegment
 import whisperx
 from google import genai
 from google.cloud import texttospeech
-from google.api_core.exceptions import GoogleAPICallError  # noqa: F401
 
 # Load environment variables from a local .env file (if present).
 load_dotenv()
@@ -215,6 +214,8 @@ def assign_voices_and_prosody(profiles, tts_client, language_code="fr-CA"):
     gender so distinct speakers get distinct voices.
     """
     voices = tts_client.list_voices(language_code=language_code).voices
+    if not voices:
+        raise RuntimeError(f"No TTS voices available for language '{language_code}'")
     assigned = {}
 
     for i, spk in enumerate(profiles.keys()):
@@ -254,11 +255,14 @@ def translate_batch_with_gemini(texts, glossary_text=""):
     )
 
     response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         contents=prompt,
         config={"response_mime_type": "application/json"},
     )
-    return json.loads(response.text)
+    result = json.loads(response.text)
+    if not isinstance(result, list):
+        raise ValueError(f"Gemini returned unexpected type {type(result).__name__}; expected a JSON list")
+    return result
 
 
 def translate_utterances(utterances, glossary_path=None):
@@ -297,26 +301,27 @@ def synthesize_line(client, text, voice_config, lang_code, output_file):
         out.write(response.audio_content)
 
 
-def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path, output_path):
+def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path, output_path, tts_client):
     """Synthesize each utterance and overlay it on a ducked original track."""
-    client = texttospeech.TextToSpeechClient()
     final_audio = AudioSegment.from_wav(original_audio_path)
     final_audio = final_audio - 15  # Duck the original audio by 15 dB.
 
     dub_layer = AudioSegment.silent(duration=len(final_audio))
 
     print("Synthesizing clips and building dub track...")
-    for i, utt in enumerate(tqdm(utterances)):
-        temp_file = f"temp_{i}.wav"
-        synthesize_line(
-            client, utt["translated_text"], speaker_configs[utt["speaker"]],
-            lang_code, temp_file,
-        )
-
-        dub_segment = AudioSegment.from_wav(temp_file)
-        start_ms = utt["start"] * 1000
-        dub_layer = dub_layer.overlay(dub_segment, position=start_ms)
-        os.remove(temp_file)
+    for utt in tqdm(utterances):
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+            temp_file = tf.name
+        try:
+            synthesize_line(
+                tts_client, utt["translated_text"], speaker_configs[utt["speaker"]],
+                lang_code, temp_file,
+            )
+            dub_segment = AudioSegment.from_wav(temp_file)
+            start_ms = utt["start"] * 1000
+            dub_layer = dub_layer.overlay(dub_segment, position=start_ms)
+        finally:
+            os.remove(temp_file)
 
     combined = final_audio.overlay(dub_layer)
     combined.export(output_path, format="wav")
@@ -372,8 +377,8 @@ def main():
     parser.add_argument("--input", required=True, help="Path to MP4 file or a Vimeo URL")
     parser.add_argument("--output_dir", default="outputs", help="Directory for outputs")
     parser.add_argument("--glossary", help="Path to an OQLF glossary text file")
-    parser.add_argument("--lang", default="fr-CA", help="Target TTS language code")
-    parser.add_argument("--model", default="small", help="WhisperX model size")
+    parser.add_argument("--lang", default=os.getenv("DEFAULT_TTS_LANG", "fr-CA"), help="Target TTS language code")
+    parser.add_argument("--model", default=os.getenv("WHISPER_MODEL", "small"), help="WhisperX model size")
     parser.add_argument("--device", default="cuda", help="cuda or cpu")
     parser.add_argument("--batch_size", type=int, default=8, help="WhisperX batch size")
     parser.add_argument("--min_speakers", type=int, default=None,
@@ -411,7 +416,7 @@ def main():
     utterances = translate_utterances(utterances, args.glossary)
 
     dub_wav = os.path.join(args.output_dir, "dubbed_audio.wav")
-    build_dub_track(utterances, speaker_configs, args.lang, audio_wav, dub_wav)
+    build_dub_track(utterances, speaker_configs, args.lang, audio_wav, dub_wav, tts_client)
 
     write_srt(utterances, os.path.join(args.output_dir, "subtitles.srt"))
     mux_video_with_audio(

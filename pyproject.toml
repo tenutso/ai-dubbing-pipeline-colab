@@ -10,12 +10,12 @@ authors = [
 ]
 keywords = ["dubbing", "tts", "whisperx", "gemini", "translation", "colab", "oqlf"]
 dependencies = [
-    "whisperx==3.7.4",
+    "whisperx==3.8.6",
     "google-genai==2.8.0",
     "google-cloud-texttospeech==2.36.0",
     "python-dotenv==1.0.1",
     "pydub==0.25.1",
-    "librosa>=0.10,<0.11",
+    "librosa>=0.10",
     "soundfile==0.13.1",
     "yt-dlp",
     "tqdm",
