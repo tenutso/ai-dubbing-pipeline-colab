@@ -164,11 +164,20 @@ def transcribe_with_whisperx(
             PipelineCls = whisperx.DiarizationPipeline
         except AttributeError:
             from whisperx.diarize import DiarizationPipeline as PipelineCls  # noqa: PLC0415
-        # Parameter renamed use_auth_token → hf_token in whisperx 3.8.x.
-        try:
-            diarize_model = PipelineCls(hf_token=hf_token, device=device)
-        except TypeError:
-            diarize_model = PipelineCls(use_auth_token=hf_token, device=device)
+        # The token kwarg has changed across whisperx/pyannote versions.
+        # Inspect the real signature to find whichever name is accepted.
+        import inspect  # noqa: PLC0415
+        _params = inspect.signature(PipelineCls.__init__).parameters
+        _token_kwarg = next(
+            (p for p in ("hf_token", "use_auth_token", "token") if p in _params),
+            None,
+        )
+        if _token_kwarg:
+            diarize_model = PipelineCls(**{_token_kwarg: hf_token, "device": device})
+        else:
+            # Fall back: set env var and hope the pipeline picks it up.
+            os.environ.setdefault("HF_TOKEN", hf_token)
+            diarize_model = PipelineCls(device=device)
         diarize_kwargs = {}
         if min_speakers is not None:
             diarize_kwargs["min_speakers"] = min_speakers
