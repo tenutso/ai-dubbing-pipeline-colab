@@ -346,6 +346,7 @@ def synthesize_line(client, text, voice_config, lang_code, output_file):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
         pitch=voice_config["pitch"],
         speaking_rate=voice_config["speaking_rate"],
     )
@@ -361,7 +362,12 @@ def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path,
     final_audio = AudioSegment.from_wav(original_audio_path)
     final_audio = final_audio - 15  # Duck the original audio by 15 dB.
 
-    dub_layer = AudioSegment.silent(duration=len(final_audio))
+    # Match silent layer to source audio parameters to prevent resampling drift.
+    dub_layer = (
+        AudioSegment.silent(duration=len(final_audio), frame_rate=final_audio.frame_rate)
+        .set_channels(final_audio.channels)
+        .set_sample_width(final_audio.sample_width)
+    )
 
     print("Synthesizing clips and building dub track...")
     for utt in tqdm(utterances):
@@ -373,7 +379,14 @@ def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path,
                 lang_code, temp_file,
             )
             dub_segment = AudioSegment.from_wav(temp_file)
-            start_ms = utt["start"] * 1000
+            # Normalise TTS clip to match source audio parameters before overlay.
+            dub_segment = (
+                dub_segment
+                .set_frame_rate(final_audio.frame_rate)
+                .set_channels(final_audio.channels)
+                .set_sample_width(final_audio.sample_width)
+            )
+            start_ms = int(utt["start"] * 1000)
             dub_layer = dub_layer.overlay(dub_segment, position=start_ms)
         finally:
             os.remove(temp_file)
@@ -385,8 +398,40 @@ def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path,
 # --------------------------------------------------------------------------- #
 # 8. Subtitles, muxing & manifest
 # --------------------------------------------------------------------------- #
+_SRT_MAX_CHARS = 42   # Netflix: max characters per line
+_SRT_MAX_LINES = 2    # Netflix: max lines per cue
+_SRT_MAX_S = 7.0      # Netflix: max cue duration in seconds
+_SRT_MIN_S = 1.0      # minimum readable cue duration
+
+
+def _srt_wrap(text):
+    """Word-wrap text to _SRT_MAX_CHARS per line, then chunk into _SRT_MAX_LINES-line groups."""
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        candidate = (current + " " + word).strip()
+        if len(candidate) <= _SRT_MAX_CHARS:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    if not lines:
+        return []
+    return [
+        "\n".join(lines[i: i + _SRT_MAX_LINES])
+        for i in range(0, len(lines), _SRT_MAX_LINES)
+    ]
+
+
 def write_srt(utterances, srt_path):
-    """Write a SubRip (.srt) subtitle file from translated utterances."""
+    """Write Netflix/BBC-style SubRip subtitles from translated utterances.
+
+    Each cue is at most 2 lines × 42 characters. Long utterances are split
+    into multiple proportionally-timed cues. Speaker labels are omitted.
+    """
     def format_ts(seconds):
         td = timedelta(seconds=seconds)
         total_sec = int(td.total_seconds())
@@ -394,11 +439,25 @@ def write_srt(utterances, srt_path):
         h, m, s = total_sec // 3600, (total_sec % 3600) // 60, total_sec % 60
         return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
+    cues = []
+    for utt in utterances:
+        text = (utt.get("translated_text") or utt.get("text", "")).strip()
+        chunks = _srt_wrap(text)
+        if not chunks:
+            continue
+        utt_dur = max(utt["end"] - utt["start"], _SRT_MIN_S * len(chunks))
+        slice_dur = utt_dur / len(chunks)
+        cue_dur = max(_SRT_MIN_S, min(_SRT_MAX_S, slice_dur))
+        for j, chunk in enumerate(chunks):
+            start = utt["start"] + j * slice_dur
+            end = min(start + cue_dur, utt["end"] + _SRT_MIN_S)
+            cues.append({"start": start, "end": max(end, start + _SRT_MIN_S), "text": chunk})
+
     with open(srt_path, "w", encoding="utf-8") as f:
-        for i, utt in enumerate(utterances):
+        for i, cue in enumerate(cues):
             f.write(f"{i + 1}\n")
-            f.write(f"{format_ts(utt['start'])} --> {format_ts(utt['end'])}\n")
-            f.write(f"[{utt['speaker']}] {utt['translated_text']}\n\n")
+            f.write(f"{format_ts(cue['start'])} --> {format_ts(cue['end'])}\n")
+            f.write(f"{cue['text']}\n\n")
 
 
 def mux_video_with_audio(video_path, audio_path, output_path):
@@ -410,7 +469,6 @@ def mux_video_with_audio(video_path, audio_path, output_path):
         "-c:v", "copy",
         "-map", "0:v:0",
         "-map", "1:a:0",
-        "-shortest",
         output_path,
     ]
     subprocess.run(cmd, check=True)
