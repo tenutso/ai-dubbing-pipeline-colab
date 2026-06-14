@@ -28,4 +28,26 @@ fi
 
 # Prefer the venv python, then python3, then python.
 PYTHON=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+
+# Inject Colab Secrets into the environment.
+# google.colab.userdata is only reachable from the notebook kernel, not from
+# bash subprocesses, so we pull the values here and export them so that the
+# Python process below picks them up via os.getenv().
+eval "$("$PYTHON" - <<'PYEOF'
+try:
+    from google.colab import userdata
+    import shlex
+    for name in ['GEMINI_API_KEY', 'HF_TOKEN', 'GOOGLE_TTS_API_KEY',
+                 'GEMINI_MODEL', 'DEFAULT_TTS_LANG', 'WHISPER_MODEL']:
+        try:
+            val = userdata.get(name)
+            if val:
+                print(f'export {name}={shlex.quote(val)}')
+        except Exception:
+            pass
+except ImportError:
+    pass
+PYEOF
+)"
+
 "$PYTHON" dubbing_pipeline.py "$@"

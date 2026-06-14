@@ -49,11 +49,19 @@ def _get_secret(name, default=None):
     """Return a secret, preferring Colab userdata over environment variables."""
     try:
         from google.colab import userdata  # noqa: PLC0415
-        val = userdata.get(name)
-        if val:
-            return val
-    except Exception:
-        pass
+        try:
+            val = userdata.get(name)
+            if val:
+                return val
+        except userdata.SecretNotFoundError:
+            pass  # not in Colab Secrets — fall through to env var
+        except userdata.NotebookAccessError:
+            print(
+                f"[WARNING] Colab Secret '{name}' exists but notebook access is disabled. "
+                "Open the 🔑 Secrets panel and toggle the switch next to it."
+            )
+    except ImportError:
+        pass  # not running in Colab
     return os.getenv(name, default)
 
 

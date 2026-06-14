@@ -58,8 +58,10 @@ Secrets are stored in your Google account and reused across sessions — you onl
 !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
 %cd ai-dubbing-pipeline-colab
 !bash setup_colab.sh
+```
 
-# Cell 2 — run (secrets are loaded automatically, no .env needed)
+```python
+# Cell 2 — run (run_dub.sh reads your Colab Secrets automatically)
 !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
 ```
 
