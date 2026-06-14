@@ -164,7 +164,11 @@ def transcribe_with_whisperx(
             PipelineCls = whisperx.DiarizationPipeline
         except AttributeError:
             from whisperx.diarize import DiarizationPipeline as PipelineCls  # noqa: PLC0415
-        diarize_model = PipelineCls(use_auth_token=hf_token, device=device)
+        # Parameter renamed use_auth_token → hf_token in whisperx 3.8.x.
+        try:
+            diarize_model = PipelineCls(hf_token=hf_token, device=device)
+        except TypeError:
+            diarize_model = PipelineCls(use_auth_token=hf_token, device=device)
         diarize_kwargs = {}
         if min_speakers is not None:
             diarize_kwargs["min_speakers"] = min_speakers
