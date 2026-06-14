@@ -310,7 +310,7 @@ def translate_batch_with_gemini(texts, glossary_text=""):
     )
 
     response = client.models.generate_content(
-        model=_get_secret("GEMINI_MODEL", "gemini-2.0-flash"),
+        model=_get_secret("GEMINI_MODEL", "gemini-2.5-flash"),
         contents=prompt,
         config={"response_mime_type": "application/json"},
     )
@@ -482,7 +482,13 @@ def main():
         {"speakers": speaker_configs, "utterances": utterances},
         os.path.join(args.output_dir, "manifest.json"),
     )
-    print("Pipeline Complete.")
+
+    out = os.path.abspath(args.output_dir)
+    print("\nPipeline complete. Output files:")
+    for fname in ("final_dubbed_video.mp4", "dubbed_audio.wav", "subtitles.srt", "manifest.json"):
+        fpath = os.path.join(out, fname)
+        size = f"{os.path.getsize(fpath) / 1024 / 1024:.1f} MB" if os.path.exists(fpath) else "missing"
+        print(f"  {fpath}  ({size})")
 
 
 if __name__ == "__main__":

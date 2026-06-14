@@ -74,7 +74,23 @@ os.environ['GOOGLE_TTS_API_KEY'] = userdata.get('GOOGLE_TTS_API_KEY')
 
 ```python
 # Cell 3 — run
+# Tip: if you see a deeply nested path in errors, run !pwd first to confirm
+# your working directory is /content/ai-dubbing-pipeline-colab (not a subdirectory).
 !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
+```
+
+```python
+# Cell 4 — download outputs
+# The pipeline prints the absolute path of each file when it finishes.
+# You can also download them directly:
+from google.colab import files
+import os, glob
+
+output_dir = "outputs"  # adjust if you passed --output_dir
+for f in ["final_dubbed_video.mp4", "dubbed_audio.wav", "subtitles.srt", "manifest.json"]:
+    path = os.path.join(output_dir, f)
+    if os.path.exists(path):
+        files.download(path)
 ```
 
 ### Local
