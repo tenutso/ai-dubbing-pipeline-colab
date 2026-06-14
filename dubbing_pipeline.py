@@ -159,9 +159,12 @@ def transcribe_with_whisperx(
 
     if hf_token:
         print("Performing speaker diarization...")
-        diarize_model = whisperx.DiarizationPipeline(
-            use_auth_token=hf_token, device=device
-        )
+        # DiarizationPipeline moved to whisperx.diarize in 3.8.x.
+        try:
+            PipelineCls = whisperx.DiarizationPipeline
+        except AttributeError:
+            from whisperx.diarize import DiarizationPipeline as PipelineCls  # noqa: PLC0415
+        diarize_model = PipelineCls(use_auth_token=hf_token, device=device)
         diarize_kwargs = {}
         if min_speakers is not None:
             diarize_kwargs["min_speakers"] = min_speakers
