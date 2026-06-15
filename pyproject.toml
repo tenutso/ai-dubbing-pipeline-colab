@@ -1,18 +1,18 @@
 [project]
 name = "dubbing-pipeline"
-version = "0.1.0"
-description = "AI-powered video dubbing pipeline (WhisperX + Gemini + Google TTS) optimized for Google Colab"
+version = "0.2.0"
+description = "AI-powered video dubbing pipeline (WhisperX + XTTS-V2 voice cloning + Gemini) optimized for Google Colab"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Dubbing Pipeline Contributors" },
 ]
-keywords = ["dubbing", "tts", "whisperx", "gemini", "translation", "colab", "oqlf"]
+keywords = ["dubbing", "tts", "xtts", "whisperx", "gemini", "translation", "colab", "oqlf", "voice-cloning"]
 dependencies = [
     "whisperx==3.8.6",
+    "coqui-tts>=0.24.0",
     "google-genai==2.8.0",
-    "google-cloud-texttospeech==2.36.0",
     "python-dotenv==1.0.1",
     "pydub==0.25.1",
     "librosa>=0.10",

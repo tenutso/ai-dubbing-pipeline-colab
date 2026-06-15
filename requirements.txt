@@ -1,7 +1,7 @@
 # Generated from pyproject.toml — pip-compatible pinned requirements.
 # Install with:  pip install -r requirements.txt
 whisperx==3.8.6
-TTS>=0.22.0
+coqui-tts>=0.24.0
 google-genai==2.8.0
 python-dotenv==1.0.1
 pydub==0.25.1
