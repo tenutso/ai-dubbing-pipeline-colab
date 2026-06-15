@@ -7,13 +7,14 @@ the pipeline both **locally** and on **Google Colab**.
 
 ## 1. Prerequisites
 
-- Python **3.10+**
-- [`ffmpeg`](https://ffmpeg.org/) on your `PATH`
+- Python **3.10–3.13**
+- [`ffmpeg`](https://ffmpeg.org/) and [`espeak-ng`](https://github.com/espeak-ng/espeak-ng) on your `PATH`
 - A CUDA-capable GPU (strongly recommended; Colab provides one for free)
-- Three API credentials (all have free tiers):
+- Two API credentials (both have free tiers):
   1. A **Gemini API key** (translation)
   2. A **Hugging Face token** (speaker diarization)
-  3. A **Google Cloud TTS API key** (voice synthesis)
+
+> XTTS-V2 runs locally on the GPU — no Google Cloud TTS account or API key is needed.
 
 ---
 
@@ -23,32 +24,21 @@ the pipeline both **locally** and on **Google Colab**.
 
 1. Go to **[Google AI Studio → API keys](https://aistudio.google.com/apikey)**.
 2. Sign in with your Google account.
-3. Click **Create API key** (you can attach it to a new or existing project).
-4. Copy the key — you will paste it into `.env` as `GEMINI_API_KEY`.
+3. Click **Create API key** (attach it to a new or existing project).
+4. Copy the key — paste it into `.env` as `GEMINI_API_KEY` or add it to Colab Secrets.
 
 ### 2.2 Hugging Face Token (for diarization)
 
-WhisperX uses the **pyannote** diarization models, which are gated.
+WhisperX uses the **pyannote** diarization models, which are gated behind a license agreement.
 
 1. Create a free account at **[huggingface.co](https://huggingface.co)**.
 2. Visit **[Settings → Access Tokens](https://huggingface.co/settings/tokens)** and
-   create a token with **Read** permission. Copy it (`HF_TOKEN`).
+   create a token with **Read** permission. Copy it — this is your `HF_TOKEN`.
 3. Accept the model licenses (you must be logged in) on **both**:
    - https://huggingface.co/pyannote/speaker-diarization-3.1
    - https://huggingface.co/pyannote/segmentation-3.0
 4. Without accepting these licenses, diarization will fail and all audio will be
    attributed to a single speaker (`SPEAKER_00`).
-
-### 2.3 Google Cloud TTS API Key
-
-1. Open the **[Google Cloud Console](https://console.cloud.google.com)** and
-   create (or select) a project.
-2. Enable the **Cloud Text-to-Speech API**:
-   *APIs & Services → Library → search "Text-to-Speech" → Enable*.
-3. Create an API key:
-   *APIs & Services → Credentials → Create Credentials → API key*.
-4. (Recommended) Restrict the key to the **Cloud Text-to-Speech API** only.
-5. Copy the key — it goes in `.env` as `GOOGLE_TTS_API_KEY` or in Colab Secrets.
 
 ---
 
@@ -62,28 +52,48 @@ cp .env.example .env
 
 ```env
 GEMINI_API_KEY=AIza...your_key...
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-2.5-flash
 HF_TOKEN=hf_...your_token...
-GOOGLE_TTS_API_KEY=AIza...your_tts_key...
-DEFAULT_TTS_LANG=fr-CA
+
+# XTTS-V2 defaults (override with CLI flags)
+TTS_LANG=fr
+TTS_TEMPERATURE=0.65
+
+# WhisperX default
 WHISPER_MODEL=small
 ```
 
-> 🔒 `.env` is excluded by `.gitignore` — never commit your secrets.
+> `.env` is excluded by `.gitignore` — never commit your secrets.
 
 ---
 
 ## 4. Local Installation
 
+### System dependencies
+
+On Debian/Ubuntu:
+```bash
+sudo apt-get install -y ffmpeg espeak-ng
+```
+
+On macOS:
+```bash
+brew install ffmpeg espeak-ng
+```
+
+Verify:
+```bash
+ffmpeg -version
+espeak-ng --version
+```
+
 ### Option A — uv (recommended)
 
 ```bash
-# Install uv if you don't have it
+git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
+cd ai-dubbing-pipeline-colab
+
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-git clone https://github.com/<your-username>/dubbing-pipeline-repo.git
-cd dubbing-pipeline-repo
-
 uv venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 uv pip install -r requirements.txt
@@ -98,20 +108,13 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Verify ffmpeg
-
-```bash
-ffmpeg -version    # should print version info
-```
-
-On Debian/Ubuntu: `sudo apt-get install -y ffmpeg`.
-On macOS: `brew install ffmpeg`.
-
 ### Run a test
 
 ```bash
-python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
+python dubbing_pipeline.py --input path/to/short_clip.mp4 --tts_lang fr --device cpu
 ```
+
+> XTTS-V2 downloads its model weights (~1.8 GB) on first run. Subsequent runs use the local cache.
 
 ---
 
@@ -119,33 +122,34 @@ python dubbing_pipeline.py --input path/to/short_clip.mp4 --device cpu
 
 ### 5.1 Add Colab Secrets (one-time, per account)
 
-Open the **🔑 Secrets** panel in the Colab left sidebar and add:
+Open the **Secrets** panel (key icon in the left sidebar) and add:
 
 | Secret name | Value |
 |-------------|-------|
 | `GEMINI_API_KEY` | Your Google AI Studio API key |
 | `HF_TOKEN` | Your Hugging Face access token |
-| `GOOGLE_TTS_API_KEY` | Your Google Cloud TTS API key |
 
-Secrets are stored in your Google account and reused across sessions — you
-only need to do this once.
+Secrets are stored in your Google account and reused across sessions.
 
 ### 5.2 Run the pipeline
 
 1. Open a new Colab notebook and set the runtime to **GPU**
    (*Runtime → Change runtime type → T4 GPU*).
 
-2. Clone the repo and install dependencies:
+2. Clone the repo and install dependencies using this **idempotent pattern**
+   (safe to re-run without creating nested directories):
 
    ```python
-   !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git
-   %cd ai-dubbing-pipeline-colab
+   import os
+   REPO = "ai-dubbing-pipeline-colab"
+   if not os.path.isdir(f"/content/{REPO}"):
+       !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git /content/{REPO}
+   %cd /content/{REPO}
    !bash setup_colab.sh
    ```
 
-   `setup_colab.sh` installs `ffmpeg` and all Python dependencies directly
-   into Colab's managed Python environment via `pip` (no virtualenv needed —
-   Colab's runtime is already isolated per session).
+   `setup_colab.sh` installs `ffmpeg`, `espeak-ng`, and all Python dependencies
+   into Colab's managed Python environment via `pip`.
 
 3. Inject secrets into the session environment:
 
@@ -155,36 +159,69 @@ only need to do this once.
    # ! commands in this session.
    from google.colab import userdata
    import os
-   os.environ['GEMINI_API_KEY']     = userdata.get('GEMINI_API_KEY')
-   os.environ['HF_TOKEN']           = userdata.get('HF_TOKEN')
-   os.environ['GOOGLE_TTS_API_KEY'] = userdata.get('GOOGLE_TTS_API_KEY')
+   os.environ['GEMINI_API_KEY'] = userdata.get('GEMINI_API_KEY')
+   os.environ['HF_TOKEN']       = userdata.get('HF_TOKEN')
    ```
 
 4. Run the pipeline:
 
    ```python
-   !bash run_dub.sh --input https://vimeo.com/123456789 --glossary examples/oqlf_glossary.txt
+   !bash run_dub.sh \
+       --input https://vimeo.com/123456789 \
+       --tts_lang fr \
+       --tts_temperature 0.65 \
+       --context "a corporate interview about financial technology"
    ```
 
-5. Download the results from `outputs/` via the Colab file browser, or:
+5. Resume after a disconnection by adding `--resume`:
+
+   ```python
+   !bash run_dub.sh \
+       --input https://vimeo.com/123456789 \
+       --tts_lang fr \
+       --resume
+   ```
+
+6. Download the results:
 
    ```python
    from google.colab import files
    files.download('outputs/final_dubbed_video.mp4')
+   files.download('outputs/subtitles.srt')
    ```
 
-### 5.3 Optional — override with a `.env` file
+### 5.3 Cache XTTS-V2 model weights to Google Drive (optional but recommended)
 
-If you prefer not to use Colab Secrets, you can still create a `.env` file
-manually and it will take precedence:
+XTTS-V2 downloads ~1.8 GB of model weights on first use. On Colab these are
+lost when the runtime disconnects. To avoid re-downloading every session:
 
-   ```python
-   %%writefile .env
-   GEMINI_API_KEY=AIza...
-   GEMINI_MODEL=gemini-2.0-flash
-   HF_TOKEN=hf_...
-   GOOGLE_TTS_API_KEY=AIza...
-   ```
+```python
+# Run once after mounting Drive
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+Then uncomment the cache block in `setup_colab.sh`, or run manually:
+
+```python
+import os
+DRIVE_CACHE = "/content/drive/MyDrive/tts_cache"
+os.makedirs(DRIVE_CACHE, exist_ok=True)
+os.makedirs(os.path.expanduser("~/.local/share"), exist_ok=True)
+!ln -sfn {DRIVE_CACHE} ~/.local/share/tts
+```
+
+### 5.4 Optional — override with a `.env` file
+
+If you prefer not to use Colab Secrets, create a `.env` file directly:
+
+```python
+%%writefile .env
+GEMINI_API_KEY=AIza...
+HF_TOKEN=hf_...
+TTS_LANG=fr
+TTS_TEMPERATURE=0.65
+```
 
 ---
 
@@ -192,12 +229,15 @@ manually and it will take precedence:
 
 | Symptom | Likely cause & fix |
 |---------|--------------------|
-| All lines attributed to `SPEAKER_00` | `HF_TOKEN` missing/invalid, or pyannote licenses not accepted (see §2.2). |
-| `CUDA out of memory` | Use a smaller `--model` (e.g. `small`), lower `--batch_size`, or restart the runtime. |
+| All lines attributed to `SPEAKER_00` | `HF_TOKEN` missing/invalid, or pyannote model licenses not accepted (see §2.2). |
+| `CUDA out of memory` during WhisperX | Use a smaller `--model` (e.g. `small`), lower `--batch_size`, or restart the runtime. |
+| `CUDA out of memory` during XTTS-V2 | The pipeline frees WhisperX memory before loading XTTS-V2. If it still OOMs, try `--model tiny` or `--device cpu`. |
 | `ffmpeg: command not found` | Install ffmpeg (see §4). On Colab, `setup_colab.sh` handles it. |
-| `403 / PermissionDenied` from TTS | TTS API not enabled on the project, or the API key is restricted to a different API. |
-| `GOOGLE_TTS_API_KEY is not set` | Add the key to Colab Secrets or your `.env` file. |
-| Gemini `quota`/`429` errors | You hit the free-tier rate limit; wait and retry or switch `GEMINI_MODEL`. |
-| Vimeo download fails | Update `yt-dlp` (`uv pip install -U yt-dlp`); some videos are private/region-locked. |
+| `espeak-ng: command not found` | Install espeak-ng (see §4). On Colab, `setup_colab.sh` handles it. |
+| XTTS-V2 model not found / download fails | Check internet access; first run downloads ~1.8 GB. See §5.3 to cache to Drive. |
+| Nested clone path in errors (`repo/repo/repo`) | Re-read §5.2 — use the idempotent clone pattern with `os.path.isdir` guard. |
+| Gemini `quota`/`429` errors | You hit the free-tier rate limit; wait and retry. Add `--resume` so translation is not re-run. |
+| Vimeo download fails | Update `yt-dlp` (`pip install -U yt-dlp`); some videos are private or region-locked. |
+| `TypeError: Object of type float32 is not JSON serializable` | Update to the latest version — this was fixed by the `_NumpyEncoder` in `save_manifest`. |
 
 Still stuck? Open an issue with the full error trace.

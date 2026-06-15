@@ -36,11 +36,28 @@ All arguments after `run_dub.sh` are forwarded directly to `dubbing_pipeline.py`
 | `--batch_size` | `8` | WhisperX transcription batch size. Lower if you hit GPU OOM. |
 | `--min_speakers` | *(none)* | **Speaker range forcing** — minimum number of speakers the diarizer may detect. |
 | `--max_speakers` | *(none)* | **Speaker range forcing** — maximum number of speakers the diarizer may detect. |
+| `--context` | *(none)* | One-sentence description of the video content (e.g. `"a corporate interview about HR software"`). Passed to Gemini to improve translation register and vocabulary. |
 | `--resume` | `False` | Reload checkpoints from `--output_dir` and skip completed stages. Critical for long videos on free Colab. |
 
 ---
 
 ## 3. Parameter deep-dive
+
+### `--context`
+
+A one-sentence description of the video that is injected into the Gemini
+translation prompt. It helps Gemini choose the right register, vocabulary, and
+domain terminology without needing a full glossary.
+
+```bash
+--context "a two-person interview about enterprise HR software"
+--context "a documentary about Quebec's forestry industry"
+--context "a product demo for a mobile payments app"
+```
+
+Without `--context`, Gemini defaults to a neutral register. The flag is most
+useful when the video uses specialised vocabulary or when the register (casual
+vs formal) needs to be preserved accurately.
 
 ### `--tts_temperature`
 
@@ -121,14 +138,15 @@ Everything lands in `--output_dir` (default `outputs/`):
 
 ## 5. Common workflows
 
-### A. Dub a local interview with a glossary
+### A. Dub a local interview with glossary and domain context
 
 ```bash
 python dubbing_pipeline.py \
     --input inputs/interview.mp4 \
-    --glossary examples/oqlf_glossary.txt \
     --tts_lang fr \
     --tts_temperature 0.65 \
+    --context "a two-person interview about enterprise HR software" \
+    --glossary examples/oqlf_glossary.txt \
     --output_dir outputs/interview
 ```
 
@@ -139,10 +157,25 @@ python dubbing_pipeline.py \
     --input https://vimeo.com/123456789 \
     --min_speakers 2 --max_speakers 2 \
     --model medium \
-    --tts_lang fr
+    --tts_lang fr \
+    --context "a documentary about Quebec infrastructure"
 ```
 
-### C. Resume after a Colab disconnection
+### C. Colab — idempotent setup (safe to re-run)
+
+Use this pattern in your notebook instead of a bare `!git clone` to avoid
+nested `repo/repo/repo/` directories when cells are re-run:
+
+```python
+import os
+REPO = "ai-dubbing-pipeline-colab"
+if not os.path.isdir(f"/content/{REPO}"):
+    !git clone https://github.com/tenutso/ai-dubbing-pipeline-colab.git /content/{REPO}
+%cd /content/{REPO}
+!bash setup_colab.sh
+```
+
+### D. Resume after a Colab disconnection
 
 ```bash
 # First run (disconnected mid-way):
@@ -152,13 +185,13 @@ bash run_dub.sh --input inputs/long_video.mp4 --tts_lang fr
 bash run_dub.sh --input inputs/long_video.mp4 --tts_lang fr --resume
 ```
 
-### D. CPU-only quick test (no GPU)
+### E. CPU-only quick test (no GPU)
 
 ```bash
 python dubbing_pipeline.py --input inputs/short.mp4 --device cpu --model base --tts_lang fr
 ```
 
-### E. Burn subtitles into the video
+### F. Burn subtitles into the video
 
 ```bash
 # After the pipeline finishes, burn the SRT into the MP4:
@@ -167,7 +200,7 @@ ffmpeg -i outputs/final_dubbed_video.mp4 \
        outputs/final_with_subs_burned.mp4
 ```
 
-### F. Inspect the manifest
+### G. Inspect the manifest
 
 ```bash
 python -c "import json; m=json.load(open('outputs/manifest.json')); print(json.dumps(m['profiles'], indent=2))"
@@ -177,16 +210,11 @@ python -c "import json; m=json.load(open('outputs/manifest.json')); print(json.d
 
 ## 6. Tips
 
-- **Start small.** Validate on a 30–60 second clip before processing a long video.
-- **Glossaries matter.** A short, well-curated glossary keeps brand names and
-  OQLF-preferred wording consistent across utterances.
-- **Speaker sample quality.** XTTS-V2 clones best from clean, 3–10 second clips.
-  Use `--sample_min_duration` to raise the bar if your source has background noise.
-- **Temperature tuning.** Interview speech works well at `0.6–0.7`. Documentary
-  narration or presentations can go lower (`0.4–0.5`) for a flatter, cleaner read.
-- **Watch your quotas.** Gemini has a free-tier rate limit; long videos with many
-  utterances consume more tokens. The checkpoint system ensures you only pay for
-  translation once per run.
-- **Cache XTTS-V2 to Drive.** On Colab, follow the instructions in `setup_colab.sh`
-  to symlink the model cache to Google Drive — this saves ~3–5 minutes of download
-  time on every reconnect.
+- **Start small.** Validate on a 30–60 second clip before processing a long video — it saves GPU minutes and catches glossary/context issues early.
+- **Use `--context`.** Even a single sentence dramatically improves Gemini's register and vocabulary choices. It costs nothing and skips the need for a glossary in many cases.
+- **Glossaries for overrides only.** Gemini already knows OQLF norms; a glossary is most valuable for brand names, product names, and client-specific terminology Gemini can't know.
+- **Speaker sample quality.** XTTS-V2 clones best from clean, 3–10 second clips. Raise `--sample_min_duration` to 5 or 6 if your source has heavy background noise.
+- **Temperature tuning.** `0.3–0.5` for flat, consistent narration (documentaries, presentations). `0.6–0.7` for conversational interviews. Above `0.75` for dramatic or expressive content.
+- **Watch Gemini quotas.** The free tier has rate limits; long videos with many utterances consume more tokens. The checkpoint system ensures translation is never re-run on `--resume`.
+- **Cache XTTS-V2 to Drive.** Follow the instructions in `setup_colab.sh` to symlink the model cache to Google Drive — saves ~3–5 minutes of download time on every Colab reconnect.
+- **Avoid nested clones.** Always use the idempotent `os.path.isdir` guard (see workflow C) instead of a bare `!git clone` — re-running a bare clone from inside the repo creates `repo/repo/repo/` subdirectories.

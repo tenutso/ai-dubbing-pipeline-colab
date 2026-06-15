@@ -373,21 +373,48 @@ def extract_speaker_samples(utterances, audio_path, output_dir, min_duration=3.0
 # --------------------------------------------------------------------------- #
 # 6. Translation (Gemini, OQLF French)
 # --------------------------------------------------------------------------- #
-def translate_batch_with_gemini(texts, glossary_text=""):
+def translate_batch_with_gemini(texts, glossary_text="", video_context=""):
     """Translate a list of strings to OQLF French, preserving list order."""
     client = genai.Client(api_key=_get_secret("GEMINI_API_KEY"))
-    prompt = (
-        "Translate the following strings of video transcript into French "
-        "(OQLF standard). Maintain the JSON list format and order exactly. "
-        f"Use this glossary where applicable: {glossary_text}\n"
+
+    context_line = (
+        f"The video is about: {video_context}\n" if video_context.strip() else ""
+    )
+    glossary_line = (
+        f"Project-specific terminology to apply: {glossary_text}\n"
+        if glossary_text.strip() else ""
+    )
+
+    system_prompt = (
+        "You are a professional Quebec French dubbing translator. "
+        "Your translations must follow OQLF standards and sound completely natural "
+        "when spoken aloud — use spoken Quebec French register, not formal written French. "
+        "Rules:\n"
+        "- Keep each translation as concise as possible while preserving meaning; "
+        "shorter is better for voice sync.\n"
+        "- Preserve sentence fragments and incomplete utterances exactly as fragments "
+        "— do not complete or restructure them.\n"
+        "- Never translate proper nouns, brand names, people's names, or acronyms "
+        "unless they appear in the project terminology list.\n"
+        "- Match the energy and register of each utterance (casual stays casual, "
+        "formal stays formal).\n"
+        "- Return a JSON array of strings, same length and order as the input."
+    )
+    user_prompt = (
+        f"{context_line}"
+        f"{glossary_line}"
         f"Strings: {json.dumps(texts, ensure_ascii=False)}"
     )
 
     response = client.models.generate_content(
         model=_get_secret("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=prompt,
-        config={"response_mime_type": "application/json"},
+        contents=user_prompt,
+        config={
+            "response_mime_type": "application/json",
+            "system_instruction": system_prompt,
+        },
     )
+
     result = json.loads(response.text)
     if not isinstance(result, list):
         raise ValueError(
@@ -396,7 +423,7 @@ def translate_batch_with_gemini(texts, glossary_text=""):
     return result
 
 
-def translate_utterances(utterances, glossary_path=None):
+def translate_utterances(utterances, glossary_path=None, video_context=""):
     """Attach a ``translated_text`` field to every utterance."""
     glossary = ""
     if glossary_path and os.path.exists(glossary_path):
@@ -404,7 +431,7 @@ def translate_utterances(utterances, glossary_path=None):
             glossary = f.read()
 
     texts = [u["text"] for u in utterances]
-    translated_texts = translate_batch_with_gemini(texts, glossary)
+    translated_texts = translate_batch_with_gemini(texts, glossary, video_context)
 
     for i, utt in enumerate(utterances):
         utt["translated_text"] = (
@@ -693,6 +720,15 @@ def main():
     parser.add_argument("--max_speakers", type=int, default=None,
                         help="Force a maximum speaker count (speaker range forcing)")
     parser.add_argument(
+        "--context",
+        default="",
+        help=(
+            "One-sentence description of the video content "
+            "(e.g. 'a corporate presentation about financial software'). "
+            "Helps Gemini choose appropriate register and terminology."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from the most recent stage checkpoint if available",
@@ -746,7 +782,7 @@ def main():
             save_checkpoint({"utterances": utterances}, ckpt_utterances)
 
         print("Translating utterances...")
-        translate_utterances(utterances, args.glossary)
+        translate_utterances(utterances, args.glossary, args.context)
         save_checkpoint({"utterances": utterances}, ckpt_translated)
 
     # Build speaker profiles (metadata only — no longer drives voice selection).
