@@ -451,6 +451,10 @@ def _make_xtts_model(device):
     on each session (see setup_colab.sh for the recommended command).
     """
     from TTS.api import TTS  # noqa: PLC0415
+    # agree_to_tos=True bypasses the interactive TOS prompt that crashes in
+    # non-interactive environments (Colab subprocesses, CI, etc.).
+    # COQUI_TOS_AGREED is set in run_dub.sh as a belt-and-suspenders fallback.
+    os.environ.setdefault("COQUI_TOS_AGREED", "1")
     print("Loading XTTS-V2 model (first run downloads ~1.8 GB)...")
     return TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 

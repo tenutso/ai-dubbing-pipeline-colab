@@ -166,17 +166,26 @@ Secrets are stored in your Google account and reused across sessions.
 4. Run the pipeline:
 
    ```python
-   !bash run_dub.sh \
+   # Use %%bash for multi-line commands. The ! magic doesn't reliably handle
+   # backslash line continuation — each continued line becomes a new command.
+   %%bash
+   bash run_dub.sh \
        --input https://vimeo.com/123456789 \
        --tts_lang fr \
        --tts_temperature 0.65 \
        --context "a corporate interview about financial technology"
    ```
 
+   Or keep it on one line with `!`:
+   ```python
+   !bash run_dub.sh --input https://vimeo.com/123456789 --tts_lang fr --tts_temperature 0.65
+   ```
+
 5. Resume after a disconnection by adding `--resume`:
 
    ```python
-   !bash run_dub.sh \
+   %%bash
+   bash run_dub.sh \
        --input https://vimeo.com/123456789 \
        --tts_lang fr \
        --resume

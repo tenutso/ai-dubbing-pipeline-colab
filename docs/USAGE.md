@@ -150,6 +150,25 @@ python dubbing_pipeline.py \
     --output_dir outputs/interview
 ```
 
+In a **Colab cell**, use `%%bash` for multi-line commands — the `!` magic does
+not reliably handle backslash line continuation (each continued line becomes
+its own command, causing `--tts_lang: command not found`):
+
+```python
+%%bash
+bash run_dub.sh \
+    --input inputs/interview.mp4 \
+    --tts_lang fr \
+    --tts_temperature 0.65 \
+    --context "a two-person interview about enterprise HR software" \
+    --glossary examples/oqlf_glossary.txt
+```
+
+Or put everything on one line with `!`:
+```python
+!bash run_dub.sh --input inputs/interview.mp4 --tts_lang fr --tts_temperature 0.65
+```
+
 ### B. Dub a Vimeo video, force a known speaker count
 
 ```bash
@@ -177,11 +196,9 @@ if not os.path.isdir(f"/content/{REPO}"):
 
 ### D. Resume after a Colab disconnection
 
-```bash
-# First run (disconnected mid-way):
-bash run_dub.sh --input inputs/long_video.mp4 --tts_lang fr
-
+```python
 # After reconnecting — skips any completed stages:
+%%bash
 bash run_dub.sh --input inputs/long_video.mp4 --tts_lang fr --resume
 ```
 

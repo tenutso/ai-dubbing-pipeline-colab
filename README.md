@@ -80,7 +80,10 @@ os.environ['HF_TOKEN']       = userdata.get('HF_TOKEN')
 
 ```python
 # Cell 3 — run
-!bash run_dub.sh \
+# Use %%bash for multi-line commands — the ! magic doesn't reliably handle
+# backslash line continuation in Colab and will treat each line as a new command.
+%%bash
+bash run_dub.sh \
     --input https://vimeo.com/123456789 \
     --tts_lang fr \
     --tts_temperature 0.65 \
@@ -100,7 +103,9 @@ for f in ["final_dubbed_video.mp4", "dubbed_audio.wav", "subtitles.srt", "manife
         files.download(path)
 ```
 
-> **Tip — resume after disconnection:** if Colab drops mid-run, re-run cells 1–2 then add `--resume` to cell 3. The pipeline reloads from the deepest available checkpoint and skips completed stages.
+> **Tip — resume after disconnection:** if Colab drops mid-run, re-run cells 1–2 then add `--resume` to the `%%bash` cell. The pipeline reloads from the deepest available checkpoint and skips completed stages.
+
+> **Tip — single-line alternative:** if you prefer `!`, keep all arguments on one line: `!bash run_dub.sh --input URL --tts_lang fr --tts_temperature 0.65`
 
 ### Local
 

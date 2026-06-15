@@ -17,6 +17,10 @@ cd "$REPO_ROOT"
 
 # Stability / performance tuning for Colab GPUs.
 export MPLBACKEND=Agg
+# Bypass the Coqui TOS interactive prompt — crashes in non-interactive
+# environments (Colab subprocesses, CI).  By setting this you confirm you
+# agree to the Coqui CPML non-commercial licence: https://coqui.ai/cpml
+export COQUI_TOS_AGREED=1
 # Suppress SyntaxWarnings from pydub (invalid escape sequences in its regex
 # strings — a known pydub 0.25.1 issue under Python 3.12, not our code).
 export PYTHONWARNINGS="ignore::SyntaxWarning:pydub"
