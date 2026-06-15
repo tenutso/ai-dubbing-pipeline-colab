@@ -23,11 +23,30 @@ See docs/USAGE.md for CLI examples and docs/ARCHITECTURE.md for design notes.
 
 import gc
 import os
+import warnings
 import argparse
 import json
 import subprocess
 import tempfile
 from datetime import timedelta
+
+# Suppress torchaudio internal deprecation warnings that originate inside
+# XTTS-V2 and are not actionable from user code.
+warnings.filterwarnings(
+    "ignore",
+    message=".*StreamingMediaDecoder has been deprecated.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*torchaudio.load_with_torchcodec.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*degrees of freedom is <= 0.*",
+    category=UserWarning,
+)
 
 import librosa
 import numpy as np
@@ -392,10 +411,35 @@ def extract_speaker_samples(utterances, audio_path, output_dir, min_duration=3.0
 # --------------------------------------------------------------------------- #
 # 6. Translation (Gemini, OQLF French)
 # --------------------------------------------------------------------------- #
-def translate_batch_with_gemini(texts, glossary_text="", video_context=""):
-    """Translate a list of strings to OQLF French, preserving list order."""
-    client = genai.Client(api_key=_get_secret("GEMINI_API_KEY"))
+_TRANSLATION_BATCH_SIZE = 25  # utterances per Gemini call — keeps output well within token limits
 
+
+def _call_gemini_translate(texts, system_prompt, user_prefix, model):
+    """Send one batch to Gemini and return a list of translated strings."""
+    client = genai.Client(api_key=_get_secret("GEMINI_API_KEY"))
+    user_prompt = user_prefix + f"Strings: {json.dumps(texts, ensure_ascii=False)}"
+    response = client.models.generate_content(
+        model=model,
+        contents=user_prompt,
+        config={
+            "response_mime_type": "application/json",
+            "system_instruction": system_prompt,
+        },
+    )
+    result = json.loads(response.text)
+    if not isinstance(result, list):
+        raise ValueError(
+            f"Gemini returned unexpected type {type(result).__name__}; expected a JSON list"
+        )
+    return result
+
+
+def translate_batch_with_gemini(texts, glossary_text="", video_context=""):
+    """Translate a list of strings to OQLF French in batches, preserving order.
+
+    Sends at most ``_TRANSLATION_BATCH_SIZE`` utterances per Gemini call to
+    avoid truncated JSON from output-token overflow on long videos.
+    """
     context_line = (
         f"The video is about: {video_context}\n" if video_context.strip() else ""
     )
@@ -403,6 +447,7 @@ def translate_batch_with_gemini(texts, glossary_text="", video_context=""):
         f"Project-specific terminology to apply: {glossary_text}\n"
         if glossary_text.strip() else ""
     )
+    user_prefix = context_line + glossary_line
 
     system_prompt = (
         "You are a professional Quebec French dubbing translator. "
@@ -419,27 +464,16 @@ def translate_batch_with_gemini(texts, glossary_text="", video_context=""):
         "formal stays formal).\n"
         "- Return a JSON array of strings, same length and order as the input."
     )
-    user_prompt = (
-        f"{context_line}"
-        f"{glossary_line}"
-        f"Strings: {json.dumps(texts, ensure_ascii=False)}"
-    )
 
-    response = client.models.generate_content(
-        model=_get_secret("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=user_prompt,
-        config={
-            "response_mime_type": "application/json",
-            "system_instruction": system_prompt,
-        },
-    )
-
-    result = json.loads(response.text)
-    if not isinstance(result, list):
-        raise ValueError(
-            f"Gemini returned unexpected type {type(result).__name__}; expected a JSON list"
-        )
-    return result
+    model = _get_secret("GEMINI_MODEL", "gemini-2.5-flash")
+    results = []
+    total = len(texts)
+    for start in range(0, total, _TRANSLATION_BATCH_SIZE):
+        batch = texts[start: start + _TRANSLATION_BATCH_SIZE]
+        end = min(start + _TRANSLATION_BATCH_SIZE, total)
+        print(f"  Translating utterances {start + 1}–{end} of {total}...")
+        results.extend(_call_gemini_translate(batch, system_prompt, user_prefix, model))
+    return results
 
 
 def translate_utterances(utterances, glossary_path=None, video_context=""):
