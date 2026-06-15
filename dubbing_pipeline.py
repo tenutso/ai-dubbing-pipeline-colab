@@ -98,12 +98,27 @@ def _free_gpu_memory():
 
 
 # --------------------------------------------------------------------------- #
+# JSON serialization helper
+# --------------------------------------------------------------------------- #
+class _NumpyEncoder(json.JSONEncoder):
+    """Serialise numpy scalars and arrays that json.dump can't handle natively."""
+    def default(self, obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+# --------------------------------------------------------------------------- #
 # Checkpoint helpers — resume after Colab disconnection
 # --------------------------------------------------------------------------- #
 def save_checkpoint(data, path):
     """Persist a pipeline stage result to JSON for later resumption."""
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+        json.dump(data, f, ensure_ascii=False, cls=_NumpyEncoder)
 
 
 def load_checkpoint(path):
@@ -621,7 +636,7 @@ def mux_video_with_audio(video_path, audio_path, output_path):
 def save_manifest(data, path):
     """Persist a JSON manifest of speakers + utterances."""
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False, cls=_NumpyEncoder)
 
 
 # --------------------------------------------------------------------------- #
