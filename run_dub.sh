@@ -11,14 +11,18 @@
 #   bash run_dub.sh --input clip.mp4 --min_speakers 2 --max_speakers 2
 #
 
+# ── Always run from the repo root ───────────────────────────────────────────
+REPO_ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+cd "$REPO_ROOT"
+
 # Stability / performance tuning for Colab GPUs.
 export MPLBACKEND=Agg
 # Suppress SyntaxWarnings from pydub (invalid escape sequences in its regex
 # strings — a known pydub 0.25.1 issue under Python 3.12, not our code).
 export PYTHONWARNINGS="ignore::SyntaxWarning:pydub"
 export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
-export HF_HOME="${HF_HOME:-$PWD/cache/hf}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$PWD/cache}"
+export HF_HOME="${HF_HOME:-$REPO_ROOT/cache/hf}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$REPO_ROOT/cache}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Activate the virtualenv if it exists.

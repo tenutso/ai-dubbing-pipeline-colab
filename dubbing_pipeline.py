@@ -440,21 +440,32 @@ def synthesize_line_xtts(tts_model, text, speaker_wav, language, output_file, te
 
 
 def _time_stretch_to_fit(audio_path, target_dur_s):
-    """Time-stretch the WAV at ``audio_path`` to match ``target_dur_s`` in place.
+    """Time-stretch the WAV at ``audio_path`` in place using ffmpeg atempo.
 
-    Uses ``librosa.effects.time_stretch`` with a rate capped to [0.5, 2.0] to
-    avoid audible distortion on extreme translations.
+    ffmpeg's atempo filter is formant-preserving and produces far less
+    boxiness/phasiness than librosa's phase vocoder.  Rate is capped to
+    [0.5, 2.0] — atempo's valid single-stage range.
     """
-    y, sr = librosa.load(audio_path, sr=_XTTS_SR)
-    current_dur = len(y) / sr
+    info = sf.info(audio_path)
+    current_dur = info.duration
     if current_dur <= 0 or target_dur_s <= 0:
         return
     rate = current_dur / target_dur_s   # > 1 compresses, < 1 expands
     rate = max(0.5, min(2.0, rate))
     if abs(rate - 1.0) < 0.02:         # skip trivial stretches
         return
-    y_stretched = librosa.effects.time_stretch(y, rate=rate)
-    sf.write(audio_path, y_stretched, sr)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        tmp_out = tf.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path,
+             "-filter:a", f"atempo={rate:.6f}", tmp_out],
+            check=True, capture_output=True,
+        )
+        os.replace(tmp_out, audio_path)
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
 
 
 def build_dub_track_xtts(
@@ -490,14 +501,27 @@ def build_dub_track_xtts(
     """
     tts_model = _make_xtts_model(device)
 
-    original = AudioSegment.from_wav(original_audio_path)
-    ducked = original - 15  # duck original by 15 dB
+    # Upsample the original audio bed to 24 kHz with ffmpeg (high-quality
+    # sinc resampling) so the XTTS-V2 clips never need to be downsampled.
+    # Mixing everything at 24 kHz preserves the full bandwidth of the cloned
+    # voices instead of losing the top 4 kHz by forcing 16 kHz pydub frames.
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        original_24k = tf.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", original_audio_path,
+             "-ar", str(_XTTS_SR), "-ac", "1", original_24k],
+            check=True, capture_output=True,
+        )
+        original = AudioSegment.from_wav(original_24k)
+    finally:
+        if os.path.exists(original_24k):
+            os.remove(original_24k)
 
-    dub_layer = (
-        AudioSegment.silent(duration=len(original), frame_rate=original.frame_rate)
-        .set_channels(original.channels)
-        .set_sample_width(original.sample_width)
-    )
+    ducked = original - 15  # duck original by 15 dB
+    dub_layer = AudioSegment.silent(
+        duration=len(original), frame_rate=_XTTS_SR
+    ).set_channels(1).set_sample_width(2)
 
     print("Synthesizing clips and building dub track...")
     for utt in tqdm(utterances):
@@ -524,13 +548,8 @@ def build_dub_track_xtts(
             target_dur = utt["end"] - utt["start"]
             _time_stretch_to_fit(temp_file, target_dur)
 
+            # XTTS-V2 outputs 24 kHz mono — no resampling needed.
             dub_segment = AudioSegment.from_wav(temp_file)
-            dub_segment = (
-                dub_segment
-                .set_frame_rate(original.frame_rate)
-                .set_channels(original.channels)
-                .set_sample_width(original.sample_width)
-            )
 
             start_ms = int(utt["start"] * 1000)
             dub_layer = dub_layer.overlay(dub_segment, position=start_ms)

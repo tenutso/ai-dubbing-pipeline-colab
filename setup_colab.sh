@@ -13,7 +13,42 @@
 # Usage (inside a Colab cell):
 #   !bash setup_colab.sh
 #
+# To avoid nested-clone drift on Colab, use this idempotent pattern in your
+# notebook instead of a bare !git clone:
+#
+#   import os
+#   REPO = "ai-dubbing-pipeline-colab"
+#   if not os.path.isdir(f"/content/{REPO}"):
+#       !git clone https://github.com/<user>/{REPO}.git /content/{REPO}
+#   %cd /content/{REPO}
+#   !bash setup_colab.sh
+#
 set -e
+
+# ── Always run from the repo root ───────────────────────────────────────────
+# Resolve this script's real location and cd to it so the script works
+# correctly regardless of the notebook's current working directory.
+# This prevents the common Colab pattern of re-running a git-clone cell
+# pushing the CWD deeper into repo/repo/repo/... subdirectories.
+REPO_ROOT="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Sanity-check: abort if we landed inside a nested clone.
+# (Two consecutive occurrences of the repo directory name in the path means
+# git clone was run from inside the already-cloned directory.)
+REPO_NAME="$(basename "$REPO_ROOT")"
+if [[ "$(dirname "$REPO_ROOT")" == *"$REPO_NAME"* ]]; then
+    echo ""
+    echo "ERROR: Nested clone detected."
+    echo "  Script is at : $REPO_ROOT"
+    echo "  This looks like a clone-inside-a-clone."
+    echo ""
+    echo "Fix: delete the extra copy and run from the top-level clone:"
+    echo "  cd /content/$REPO_NAME && bash setup_colab.sh"
+    exit 1
+fi
+
+cd "$REPO_ROOT"
+echo "==> Working directory: $PWD"
 
 echo "==> Installing system dependencies..."
 apt-get update -qq && apt-get install -y -qq ffmpeg git curl espeak-ng
