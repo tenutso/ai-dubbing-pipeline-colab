@@ -250,15 +250,34 @@ def transcribe_with_whisperx(
 # --------------------------------------------------------------------------- #
 # 3. Utterance merging
 # --------------------------------------------------------------------------- #
-def merge_segments_to_utterances(segments):
-    """Merge consecutive same-speaker segments into longer utterances."""
+def merge_segments_to_utterances(segments, max_duration=15.0):
+    """Merge consecutive same-speaker segments into utterances.
+
+    Segments are merged only when they share a speaker AND the combined duration
+    stays within ``max_duration`` seconds.  Without the cap, a single-speaker
+    video (or a failed diarization that labels everything SPEAKER_00) collapses
+    into one enormous utterance — XTTS-V2 then synthesizes a very short clip
+    which gets stretched to fill minutes, producing slow/distorted audio.
+
+    Parameters
+    ----------
+    segments : list[dict]
+        Word-aligned segments from WhisperX, each with ``speaker``, ``start``,
+        ``end`` and ``text`` keys.
+    max_duration : float
+        Maximum merged utterance length in seconds.  15 s is a good default —
+        long enough to be a complete sentence, short enough for XTTS-V2 to
+        handle cleanly and for time-stretching to stay within the safe range.
+    """
     utterances = []
     if not segments:
         return utterances
 
     current = segments[0].copy()
     for next_seg in segments[1:]:
-        if next_seg.get("speaker") == current.get("speaker"):
+        same_speaker = next_seg.get("speaker") == current.get("speaker")
+        would_be_duration = next_seg["end"] - current["start"]
+        if same_speaker and would_be_duration <= max_duration:
             current["end"] = next_seg["end"]
             current["text"] = current["text"].strip() + " " + next_seg["text"].strip()
         else:
@@ -716,6 +735,16 @@ def main():
         default=3.0,
         help="Minimum utterance duration (seconds) to use as a speaker clone reference. Default: 3.0",
     )
+    parser.add_argument(
+        "--max_utterance_duration",
+        type=float,
+        default=15.0,
+        help=(
+            "Maximum merged utterance length in seconds (default: 15). "
+            "Prevents a single-speaker video or failed diarization from "
+            "collapsing the entire audio into one utterance."
+        ),
+    )
     parser.add_argument("--model", default=_get_secret("WHISPER_MODEL", "small"), help="WhisperX model size")
     parser.add_argument("--device", default="cuda", help="cuda or cpu")
     parser.add_argument("--batch_size", type=int, default=8, help="WhisperX batch size")
@@ -782,7 +811,7 @@ def main():
                 )
                 save_checkpoint({"segments": segments}, ckpt_segments)
 
-            utterances = merge_segments_to_utterances(segments)
+            utterances = merge_segments_to_utterances(segments, max_duration=args.max_utterance_duration)
             save_checkpoint({"utterances": utterances}, ckpt_utterances)
 
         print("Translating utterances...")
