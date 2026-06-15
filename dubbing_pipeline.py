@@ -512,15 +512,89 @@ def _make_xtts_model(device):
     return TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 
 
-def synthesize_line_xtts(tts_model, text, speaker_wav, language, output_file, temperature=0.65):
-    """Synthesize ``text`` cloning the voice from ``speaker_wav``."""
-    tts_model.tts_to_file(
-        text=text,
-        speaker_wav=speaker_wav,
-        language=language,
-        file_path=output_file,
-        temperature=temperature,
-    )
+_XTTS_MAX_CHARS = 250  # conservative buffer below XTTS-V2's hard 273-char truncation limit
+
+
+def _split_text_for_xtts(text, max_chars=_XTTS_MAX_CHARS):
+    """Split ``text`` into chunks that each fit within XTTS-V2's character limit.
+
+    Splits at sentence-ending punctuation first (preserving natural prosody
+    boundaries), then falls back to word-boundary splitting for any sentence
+    that is itself too long.
+    """
+    import re  # noqa: PLC0415
+    if len(text) <= max_chars:
+        return [text]
+
+    raw_sentences = re.split(r'(?<=[.!?;])\s+', text)
+    chunks, current = [], ""
+    for sentence in raw_sentences:
+        if len(sentence) > max_chars:
+            # Sentence alone exceeds limit — split word by word.
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            for word in sentence.split():
+                candidate = (current + " " + word).strip()
+                if len(candidate) <= max_chars:
+                    current = candidate
+                else:
+                    if current:
+                        chunks.append(current.strip())
+                    current = word
+        else:
+            candidate = (current + " " + sentence).strip()
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current.strip())
+                current = sentence
+    if current:
+        chunks.append(current.strip())
+    return [c for c in chunks if c]
+
+
+def synthesize_utterance_xtts(tts_model, text, speaker_wav, language, output_file, temperature=0.65):
+    """Synthesize ``text`` to ``output_file``, chunking if it exceeds XTTS-V2's limit.
+
+    XTTS-V2 silently truncates input beyond 273 characters, producing a short
+    clip that then gets over-stretched. This function splits long texts at
+    sentence boundaries, synthesizes each chunk, and concatenates the results
+    so no audio is dropped.
+    """
+    chunks = _split_text_for_xtts(text)
+    if len(chunks) == 1:
+        tts_model.tts_to_file(
+            text=chunks[0],
+            speaker_wav=speaker_wav,
+            language=language,
+            file_path=output_file,
+            temperature=temperature,
+        )
+        return
+
+    chunk_files = []
+    try:
+        for chunk in chunks:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                chunk_path = tf.name
+            tts_model.tts_to_file(
+                text=chunk,
+                speaker_wav=speaker_wav,
+                language=language,
+                file_path=chunk_path,
+                temperature=temperature,
+            )
+            chunk_files.append(chunk_path)
+        combined = AudioSegment.from_wav(chunk_files[0])
+        for chunk_path in chunk_files[1:]:
+            combined += AudioSegment.from_wav(chunk_path)
+        combined.export(output_file, format="wav")
+    finally:
+        for f in chunk_files:
+            if os.path.exists(f):
+                os.remove(f)
 
 
 def _time_stretch_to_fit(audio_path, target_dur_s):
@@ -625,7 +699,7 @@ def build_dub_track_xtts(
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
             temp_file = tf.name
         try:
-            synthesize_line_xtts(
+            synthesize_utterance_xtts(
                 tts_model, text, speaker_wav, lang_code, temp_file, temperature
             )
 
