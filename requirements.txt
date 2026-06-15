@@ -1,8 +1,8 @@
 # Generated from pyproject.toml — pip-compatible pinned requirements.
 # Install with:  pip install -r requirements.txt
 whisperx==3.8.6
+TTS>=0.22.0
 google-genai==2.8.0
-google-cloud-texttospeech==2.36.0
 python-dotenv==1.0.1
 pydub==0.25.1
 librosa>=0.10

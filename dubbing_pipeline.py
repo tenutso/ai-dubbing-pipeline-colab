@@ -10,16 +10,18 @@ Given an MP4 file or a Vimeo URL, this pipeline will:
   3. Transcribe + word-align + diarize speakers with WhisperX.
   4. Merge word/segment level results into speaker utterances.
   5. Build acoustic speaker profiles (pitch, RMS energy, rate of speech).
-  6. Match each diarized speaker to a Google Cloud TTS voice + prosody.
+  6. Extract a high-quality audio sample per speaker for voice cloning.
   7. Translate every utterance to French (OQLF standard) with Gemini.
-  8. Synthesize dubbed audio and overlay it on a ducked original track.
-  9. Write an SRT subtitle file.
+  8. Synthesize dubbed audio with XTTS-V2 (voice cloning) and time-stretch
+     each clip to fit the original utterance window.
+  9. Write an SRT subtitle file anchored to dubbed audio timing.
  10. Mux the dubbed audio back onto the original video.
  11. Save a JSON manifest describing speakers and utterances.
 
 See docs/USAGE.md for CLI examples and docs/ARCHITECTURE.md for design notes.
 """
 
+import gc
 import os
 import argparse
 import json
@@ -29,14 +31,13 @@ from datetime import timedelta
 
 import librosa
 import numpy as np
+import soundfile as sf
 from dotenv import load_dotenv
 from tqdm import tqdm
 from pydub import AudioSegment
 
 import whisperx
 from google import genai
-from google.api_core.client_options import ClientOptions
-from google.cloud import texttospeech
 
 # Load environment variables from a local .env file (if present).
 load_dotenv()
@@ -54,30 +55,17 @@ def _get_secret(name, default=None):
             if val:
                 return val
         except userdata.SecretNotFoundError:
-            pass  # secret not defined — fall through to env var
+            pass
         except userdata.NotebookAccessError:
             print(
                 f"[WARNING] Colab Secret '{name}' has notebook access disabled. "
                 "Open the 🔑 Secrets panel and toggle the switch next to it."
             )
         except Exception:
-            # No IPython kernel (e.g. subprocess) — fall through to os.getenv().
             pass
     except ImportError:
-        pass  # not running in Colab
+        pass
     return os.getenv(name, default)
-
-
-def _make_tts_client():
-    """Create a TextToSpeechClient authenticated via API key."""
-    api_key = _get_secret("GOOGLE_TTS_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "GOOGLE_TTS_API_KEY is not set. Add it to Colab Secrets or your .env file."
-        )
-    return texttospeech.TextToSpeechClient(
-        client_options=ClientOptions(api_key=api_key)
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -92,12 +80,38 @@ def _resolve_device(requested):
         if not torch.cuda.is_available():
             print("[WARNING] CUDA not available — falling back to CPU (slower).")
             return "cpu"
-        # Trigger a real CUDA call to catch driver/runtime version mismatches.
         torch.zeros(1).cuda()
         return "cuda"
     except Exception as e:
         print(f"[WARNING] CUDA unusable ({e})\nFalling back to CPU (slower).")
         return "cpu"
+
+
+def _free_gpu_memory():
+    """Release GPU memory held by previously loaded models."""
+    gc.collect()
+    try:
+        import torch  # noqa: PLC0415
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint helpers — resume after Colab disconnection
+# --------------------------------------------------------------------------- #
+def save_checkpoint(data, path):
+    """Persist a pipeline stage result to JSON for later resumption."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def load_checkpoint(path):
+    """Return parsed JSON from a checkpoint file, or None if it doesn't exist."""
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -159,8 +173,7 @@ def transcribe_with_whisperx(
         Hugging Face token required for the pyannote diarization model.
         If omitted, every segment is assigned ``SPEAKER_00``.
     min_speakers, max_speakers : int, optional
-        Force the diarizer to a known speaker count range ("speaker range
-        forcing"). Useful when the automatic estimate over/under-segments.
+        Force the diarizer to a known speaker count range.
     """
     print(f"Transcribing {audio_path} with WhisperX ({model_name})...")
     compute_type = "float16" if device == "cuda" else "int8"
@@ -168,7 +181,10 @@ def transcribe_with_whisperx(
     audio = whisperx.load_audio(audio_path)
     result = model.transcribe(audio, batch_size=batch_size)
 
-    # Word-level alignment for accurate timestamps.
+    # Free Whisper model before alignment model loads.
+    del model
+    _free_gpu_memory()
+
     model_a, metadata = whisperx.load_align_model(
         language_code=result["language"], device=device
     )
@@ -176,16 +192,15 @@ def transcribe_with_whisperx(
         result["segments"], model_a, metadata, audio, device,
         return_char_alignments=False,
     )
+    del model_a
+    _free_gpu_memory()
 
     if hf_token:
         print("Performing speaker diarization...")
-        # DiarizationPipeline moved to whisperx.diarize in 3.8.x.
         try:
             PipelineCls = whisperx.DiarizationPipeline
         except AttributeError:
             from whisperx.diarize import DiarizationPipeline as PipelineCls  # noqa: PLC0415
-        # The token kwarg has changed across whisperx/pyannote versions.
-        # Inspect the real signature to find whichever name is accepted.
         import inspect  # noqa: PLC0415
         _params = inspect.signature(PipelineCls.__init__).parameters
         _token_kwarg = next(
@@ -195,7 +210,6 @@ def transcribe_with_whisperx(
         if _token_kwarg:
             diarize_model = PipelineCls(**{_token_kwarg: hf_token, "device": device})
         else:
-            # Fall back: set env var and hope the pipeline picks it up.
             os.environ.setdefault("HF_TOKEN", hf_token)
             diarize_model = PipelineCls(device=device)
         diarize_kwargs = {}
@@ -205,12 +219,13 @@ def transcribe_with_whisperx(
             diarize_kwargs["max_speakers"] = max_speakers
         diarize_segments = diarize_model(audio, **diarize_kwargs)
         result = whisperx.assign_word_speakers(diarize_segments, result)
+        del diarize_model
+        _free_gpu_memory()
     else:
         print("HF_TOKEN missing. Skipping diarization. Assigning 'SPEAKER_00' to all.")
         for seg in result["segments"]:
             seg["speaker"] = "SPEAKER_00"
 
-    # Ensure every segment carries a speaker key (diarization can miss some).
     for seg in result["segments"]:
         seg.setdefault("speaker", "SPEAKER_00")
 
@@ -256,10 +271,10 @@ def build_speaker_profiles(utterances, audio_path):
         chunk = audio[start_samp:end_samp]
 
         if len(chunk) > 0:
-            pitches, magnitudes = librosa.piptrack(y=chunk, sr=sr)
+            pitches, _ = librosa.piptrack(y=chunk, sr=sr)
             pitch = np.mean(pitches[pitches > 0]) if np.any(pitches > 0) else 0
             profiles[spk]["pitches"].append(pitch)
-            profiles[spk]["rms"].append(np.sqrt(np.mean(chunk ** 2)))
+            profiles[spk]["rms"].append(float(np.sqrt(np.mean(chunk ** 2))))
             profiles[spk]["durations"].append(utt["end"] - utt["start"])
             profiles[spk]["word_counts"].append(len(utt["text"].split()))
 
@@ -279,41 +294,65 @@ def build_speaker_profiles(utterances, audio_path):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Voice & prosody assignment
+# 5. Speaker sample extraction for voice cloning
 # --------------------------------------------------------------------------- #
-def assign_voices_and_prosody(profiles, tts_client, language_code="fr-CA"):
-    """Map each diarized speaker to a Google TTS voice + speaking rate.
+_XTTS_SR = 24000  # XTTS-V2 native sample rate
 
-    Strategy: infer a gender preference from the pitch category (high → female,
-    otherwise male), then round-robin through the available voices of that
-    gender so distinct speakers get distinct voices.
+
+def extract_speaker_samples(utterances, audio_path, output_dir, min_duration=3.0):
+    """Extract a high-quality reference audio sample per speaker for XTTS-V2 cloning.
+
+    For each speaker the utterance with the best ``duration × RMS`` score that
+    meets the minimum duration threshold is selected.  If no utterance is long
+    enough, the longest available is used as a fallback.
+
+    Parameters
+    ----------
+    utterances : list[dict]
+        Merged utterances with ``speaker``, ``start``, ``end`` keys.
+    audio_path : str
+        Path to the original mono WAV (any sample rate — resampled to 24 kHz).
+    output_dir : str
+        Root output directory.  Samples land in ``{output_dir}/speaker_samples/``.
+    min_duration : float
+        Minimum clip length in seconds to be considered as a reference sample.
+
+    Returns
+    -------
+    dict[str, str]
+        Mapping of ``speaker_id → wav_path``.
     """
-    voices = tts_client.list_voices(language_code=language_code).voices
-    if not voices:
-        raise RuntimeError(f"No TTS voices available for language '{language_code}'")
-    assigned = {}
+    samples_dir = os.path.join(output_dir, "speaker_samples")
+    os.makedirs(samples_dir, exist_ok=True)
 
-    for i, spk in enumerate(profiles.keys()):
-        pitch_cat = profiles[spk]["pitch_category"]
-        ssml_gender = (
-            texttospeech.SsmlVoiceGender.FEMALE
-            if pitch_cat == "high"
-            else texttospeech.SsmlVoiceGender.MALE
-        )
+    audio, sr = librosa.load(audio_path, sr=_XTTS_SR)
 
-        filtered = [v for v in voices if v.ssml_gender == ssml_gender]
-        if filtered:
-            voice_name = filtered[i % len(filtered)].name
-        else:
-            voice_name = voices[i % len(voices)].name
+    by_speaker: dict = {}
+    for utt in utterances:
+        spk = utt["speaker"]
+        dur = utt["end"] - utt["start"]
+        rms = float(np.sqrt(np.mean(
+            audio[int(utt["start"] * sr): int(utt["end"] * sr)] ** 2
+        ))) if dur > 0 else 0.0
+        by_speaker.setdefault(spk, []).append((dur, rms, utt))
 
-        assigned[spk] = {
-            "voice_name": voice_name,
-            "pitch": 0.0,
-            # Normalize rate of speech into TTS' valid [0.25, 4.0] range.
-            "speaking_rate": max(0.25, min(4.0, profiles[spk]["rate_of_speech"] / 2.5)),
-        }
-    return assigned
+    speaker_samples = {}
+    for spk, entries in by_speaker.items():
+        qualified = [(d, r, u) for d, r, u in entries if d >= min_duration]
+        pool = qualified if qualified else entries
+        # Score: duration × RMS — prefer long, loud clips
+        _, _, best_utt = max(pool, key=lambda x: x[0] * x[1])
+
+        start_samp = int(best_utt["start"] * sr)
+        end_samp = int(best_utt["end"] * sr)
+        chunk = audio[start_samp:end_samp]
+
+        sample_path = os.path.join(samples_dir, f"{spk}.wav")
+        sf.write(sample_path, chunk, sr)
+        speaker_samples[spk] = sample_path
+        print(f"  {spk}: sample {best_utt['end'] - best_utt['start']:.1f}s → {sample_path}")
+
+    return speaker_samples
 
 
 # --------------------------------------------------------------------------- #
@@ -336,7 +375,9 @@ def translate_batch_with_gemini(texts, glossary_text=""):
     )
     result = json.loads(response.text)
     if not isinstance(result, list):
-        raise ValueError(f"Gemini returned unexpected type {type(result).__name__}; expected a JSON list")
+        raise ValueError(
+            f"Gemini returned unexpected type {type(result).__name__}; expected a JSON list"
+        )
     return result
 
 
@@ -351,81 +392,156 @@ def translate_utterances(utterances, glossary_path=None):
     translated_texts = translate_batch_with_gemini(texts, glossary)
 
     for i, utt in enumerate(utterances):
-        utt["translated_text"] = translated_texts[i] if i < len(translated_texts) else utt["text"]
+        utt["translated_text"] = (
+            translated_texts[i] if i < len(translated_texts) else utt["text"]
+        )
     return utterances
 
 
 # --------------------------------------------------------------------------- #
-# 7. Speech synthesis & dub track assembly
+# 7. XTTS-V2 speech synthesis with voice cloning
 # --------------------------------------------------------------------------- #
-def synthesize_line(client, text, voice_config, lang_code, output_file):
-    """Synthesize a single line to a 16-bit PCM WAV file."""
-    input_text = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=lang_code, name=voice_config["voice_name"]
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.LINEAR16,
-        sample_rate_hertz=16000,
-        pitch=voice_config["pitch"],
-        speaking_rate=voice_config["speaking_rate"],
-    )
-    response = client.synthesize_speech(
-        input=input_text, voice=voice, audio_config=audio_config
-    )
-    with open(output_file, "wb") as out:
-        out.write(response.audio_content)
+def _make_xtts_model(device):
+    """Load the XTTS-V2 model onto ``device``.
+
+    Weights (~1.8 GB) are cached under ``$XDG_CACHE_HOME/tts`` on first run.
+    On Colab, symlink that directory to Google Drive to avoid re-downloading
+    on each session (see setup_colab.sh for the recommended command).
+    """
+    from TTS.api import TTS  # noqa: PLC0415
+    print("Loading XTTS-V2 model (first run downloads ~1.8 GB)...")
+    return TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 
 
-def build_dub_track(utterances, speaker_configs, lang_code, original_audio_path, output_path, tts_client):
-    """Synthesize each utterance and overlay it on a ducked original track."""
-    final_audio = AudioSegment.from_wav(original_audio_path)
-    final_audio = final_audio - 15  # Duck the original audio by 15 dB.
+def synthesize_line_xtts(tts_model, text, speaker_wav, language, output_file, temperature=0.65):
+    """Synthesize ``text`` cloning the voice from ``speaker_wav``."""
+    tts_model.tts_to_file(
+        text=text,
+        speaker_wav=speaker_wav,
+        language=language,
+        file_path=output_file,
+        temperature=temperature,
+    )
 
-    # Match silent layer to source audio parameters to prevent resampling drift.
+
+def _time_stretch_to_fit(audio_path, target_dur_s):
+    """Time-stretch the WAV at ``audio_path`` to match ``target_dur_s`` in place.
+
+    Uses ``librosa.effects.time_stretch`` with a rate capped to [0.5, 2.0] to
+    avoid audible distortion on extreme translations.
+    """
+    y, sr = librosa.load(audio_path, sr=_XTTS_SR)
+    current_dur = len(y) / sr
+    if current_dur <= 0 or target_dur_s <= 0:
+        return
+    rate = current_dur / target_dur_s   # > 1 compresses, < 1 expands
+    rate = max(0.5, min(2.0, rate))
+    if abs(rate - 1.0) < 0.02:         # skip trivial stretches
+        return
+    y_stretched = librosa.effects.time_stretch(y, rate=rate)
+    sf.write(audio_path, y_stretched, sr)
+
+
+def build_dub_track_xtts(
+    utterances,
+    speaker_samples,
+    lang_code,
+    original_audio_path,
+    output_path,
+    device,
+    temperature=0.65,
+):
+    """Synthesize each utterance with XTTS-V2, time-stretch to fit, and mix.
+
+    Dubbed timing (``dubbed_start`` / ``dubbed_end``) is stored on each
+    utterance so ``write_srt`` can anchor subtitle cues to the actual speech.
+
+    Parameters
+    ----------
+    utterances : list[dict]
+        Translated utterances (must have ``translated_text`` set).
+    speaker_samples : dict[str, str]
+        ``speaker_id → wav_path`` from :func:`extract_speaker_samples`.
+    lang_code : str
+        ISO 639-1 language code recognised by XTTS-V2 (e.g. ``"fr"``).
+    original_audio_path : str
+        Path to original audio (ducked and used as ambience bed).
+    output_path : str
+        Destination path for the final mixed WAV.
+    device : str
+        ``"cuda"`` or ``"cpu"``.
+    temperature : float
+        XTTS-V2 temperature (0.1 = consistent, 1.0 = expressive).
+    """
+    tts_model = _make_xtts_model(device)
+
+    original = AudioSegment.from_wav(original_audio_path)
+    ducked = original - 15  # duck original by 15 dB
+
     dub_layer = (
-        AudioSegment.silent(duration=len(final_audio), frame_rate=final_audio.frame_rate)
-        .set_channels(final_audio.channels)
-        .set_sample_width(final_audio.sample_width)
+        AudioSegment.silent(duration=len(original), frame_rate=original.frame_rate)
+        .set_channels(original.channels)
+        .set_sample_width(original.sample_width)
     )
 
     print("Synthesizing clips and building dub track...")
     for utt in tqdm(utterances):
+        text = utt.get("translated_text", "").strip()
+        if not text:
+            utt["dubbed_start"] = utt["start"]
+            utt["dubbed_end"] = utt["end"]
+            continue
+
+        speaker_wav = speaker_samples.get(utt["speaker"])
+        if not speaker_wav:
+            print(f"[WARNING] No voice sample for {utt['speaker']} — skipping utterance.")
+            utt["dubbed_start"] = utt["start"]
+            utt["dubbed_end"] = utt["end"]
+            continue
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
             temp_file = tf.name
         try:
-            synthesize_line(
-                tts_client, utt["translated_text"], speaker_configs[utt["speaker"]],
-                lang_code, temp_file,
+            synthesize_line_xtts(
+                tts_model, text, speaker_wav, lang_code, temp_file, temperature
             )
+
+            target_dur = utt["end"] - utt["start"]
+            _time_stretch_to_fit(temp_file, target_dur)
+
             dub_segment = AudioSegment.from_wav(temp_file)
-            # Normalise TTS clip to match source audio parameters before overlay.
             dub_segment = (
                 dub_segment
-                .set_frame_rate(final_audio.frame_rate)
-                .set_channels(final_audio.channels)
-                .set_sample_width(final_audio.sample_width)
+                .set_frame_rate(original.frame_rate)
+                .set_channels(original.channels)
+                .set_sample_width(original.sample_width)
             )
+
             start_ms = int(utt["start"] * 1000)
             dub_layer = dub_layer.overlay(dub_segment, position=start_ms)
+
+            # Anchored subtitle timing: record actual clip duration after stretch.
+            actual_dur_s = len(dub_segment) / 1000.0
+            utt["dubbed_start"] = utt["start"]
+            utt["dubbed_end"] = utt["start"] + actual_dur_s
         finally:
             os.remove(temp_file)
 
-    combined = final_audio.overlay(dub_layer)
+    combined = ducked.overlay(dub_layer)
     combined.export(output_path, format="wav")
 
 
 # --------------------------------------------------------------------------- #
 # 8. Subtitles, muxing & manifest
 # --------------------------------------------------------------------------- #
-_SRT_MAX_CHARS = 42   # Netflix: max characters per line
-_SRT_MAX_LINES = 2    # Netflix: max lines per cue
-_SRT_MAX_S = 7.0      # Netflix: max cue duration in seconds
-_SRT_MIN_S = 1.0      # minimum readable cue duration
+_SRT_MAX_CHARS = 42
+_SRT_MAX_LINES = 2
+_SRT_MAX_S = 7.0
+_SRT_MIN_S = 1.0
 
 
 def _srt_wrap(text):
-    """Word-wrap text to _SRT_MAX_CHARS per line, then chunk into _SRT_MAX_LINES-line groups."""
+    """Word-wrap text to _SRT_MAX_CHARS per line, chunk into _SRT_MAX_LINES groups."""
     words = text.split()
     lines, current = [], ""
     for word in words:
@@ -447,10 +563,12 @@ def _srt_wrap(text):
 
 
 def write_srt(utterances, srt_path):
-    """Write Netflix/BBC-style SubRip subtitles from translated utterances.
+    """Write Netflix/BBC-style SubRip subtitles anchored to dubbed audio timing.
 
-    Each cue is at most 2 lines × 42 characters. Long utterances are split
-    into multiple proportionally-timed cues. Speaker labels are omitted.
+    Each cue uses ``dubbed_start`` / ``dubbed_end`` when available (set by
+    :func:`build_dub_track_xtts`) so subtitles appear exactly when the cloned
+    voice speaks.  Falls back to the original ``start`` / ``end`` values if
+    dubbed timing was not recorded (e.g. utterances that were skipped).
     """
     def format_ts(seconds):
         td = timedelta(seconds=seconds)
@@ -465,12 +583,18 @@ def write_srt(utterances, srt_path):
         chunks = _srt_wrap(text)
         if not chunks:
             continue
-        utt_dur = max(utt["end"] - utt["start"], _SRT_MIN_S * len(chunks))
+
+        # Prefer dubbed timing; fall back to original transcription timing.
+        utt_start = utt.get("dubbed_start", utt["start"])
+        utt_end = utt.get("dubbed_end", utt["end"])
+
+        utt_dur = max(utt_end - utt_start, _SRT_MIN_S * len(chunks))
         slice_dur = utt_dur / len(chunks)
         cue_dur = max(_SRT_MIN_S, min(_SRT_MAX_S, slice_dur))
+
         for j, chunk in enumerate(chunks):
-            start = utt["start"] + j * slice_dur
-            end = min(start + cue_dur, utt["end"] + _SRT_MIN_S)
+            start = utt_start + j * slice_dur
+            end = min(start + cue_dur, utt_end + _SRT_MIN_S)
             cues.append({"start": start, "end": max(end, start + _SRT_MIN_S), "text": chunk})
 
     with open(srt_path, "w", encoding="utf-8") as f:
@@ -505,12 +629,28 @@ def save_manifest(data, path):
 # --------------------------------------------------------------------------- #
 def main():
     parser = argparse.ArgumentParser(
-        description="AI Dubbing Pipeline (Colab Optimized)"
+        description="AI Dubbing Pipeline — XTTS-V2 voice cloning (Colab Optimized)"
     )
     parser.add_argument("--input", required=True, help="Path to MP4 file or a Vimeo URL")
     parser.add_argument("--output_dir", default="outputs", help="Directory for outputs")
     parser.add_argument("--glossary", help="Path to an OQLF glossary text file")
-    parser.add_argument("--lang", default=_get_secret("DEFAULT_TTS_LANG", "fr-CA"), help="Target TTS language code")
+    parser.add_argument(
+        "--tts_lang",
+        default=_get_secret("TTS_LANG", "fr"),
+        help="XTTS-V2 language code (ISO 639-1: fr, en, es, …)",
+    )
+    parser.add_argument(
+        "--tts_temperature",
+        type=float,
+        default=float(_get_secret("TTS_TEMPERATURE", "0.65")),
+        help="XTTS-V2 temperature: 0.1 (consistent) → 1.0 (expressive). Default: 0.65",
+    )
+    parser.add_argument(
+        "--sample_min_duration",
+        type=float,
+        default=3.0,
+        help="Minimum utterance duration (seconds) to use as a speaker clone reference. Default: 3.0",
+    )
     parser.add_argument("--model", default=_get_secret("WHISPER_MODEL", "small"), help="WhisperX model size")
     parser.add_argument("--device", default="cuda", help="cuda or cpu")
     parser.add_argument("--batch_size", type=int, default=8, help="WhisperX batch size")
@@ -518,57 +658,113 @@ def main():
                         help="Force a minimum speaker count (speaker range forcing)")
     parser.add_argument("--max_speakers", type=int, default=None,
                         help="Force a maximum speaker count (speaker range forcing)")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the most recent stage checkpoint if available",
+    )
     args = parser.parse_args()
 
     device = _resolve_device(args.device)
-
     os.makedirs(args.output_dir, exist_ok=True)
-    video_file = os.path.join(args.output_dir, "input_video.mp4")
 
+    # Checkpoint paths (written after each expensive stage).
+    ckpt_segments = os.path.join(args.output_dir, "ckpt_segments.json")
+    ckpt_utterances = os.path.join(args.output_dir, "ckpt_utterances.json")
+    ckpt_translated = os.path.join(args.output_dir, "ckpt_translated.json")
+
+    # ── Stage 1: media acquisition ──────────────────────────────────────────
+    video_file = os.path.join(args.output_dir, "input_video.mp4")
     if args.input.startswith("http"):
         download_vimeo(args.input, video_file)
     else:
         video_file = args.input
 
     audio_wav = os.path.join(args.output_dir, "original_audio.wav")
-    extract_audio_to_wav(video_file, audio_wav)
+    if not os.path.exists(audio_wav):
+        extract_audio_to_wav(video_file, audio_wav)
 
-    segments = transcribe_with_whisperx(
-        audio_wav,
-        device=device,
-        model_name=args.model,
-        batch_size=args.batch_size,
-        hf_token=_get_secret("HF_TOKEN"),
-        min_speakers=args.min_speakers,
-        max_speakers=args.max_speakers,
-    )
-    utterances = merge_segments_to_utterances(segments)
+    # ── Stages 2–6: ASR → merge → profile → samples → translate ────────────
+    if args.resume and (data := load_checkpoint(ckpt_translated)):
+        utterances = data["utterances"]
+        print("[RESUME] Loaded translation checkpoint — skipping ASR + translation.")
+    else:
+        if args.resume and (data := load_checkpoint(ckpt_utterances)):
+            utterances = data["utterances"]
+            print("[RESUME] Loaded utterances checkpoint — skipping ASR.")
+        else:
+            if args.resume and (data := load_checkpoint(ckpt_segments)):
+                segments = data["segments"]
+                print("[RESUME] Loaded segments checkpoint — skipping transcription.")
+            else:
+                segments = transcribe_with_whisperx(
+                    audio_wav,
+                    device=device,
+                    model_name=args.model,
+                    batch_size=args.batch_size,
+                    hf_token=_get_secret("HF_TOKEN"),
+                    min_speakers=args.min_speakers,
+                    max_speakers=args.max_speakers,
+                )
+                save_checkpoint({"segments": segments}, ckpt_segments)
 
+            utterances = merge_segments_to_utterances(segments)
+            save_checkpoint({"utterances": utterances}, ckpt_utterances)
+
+        print("Translating utterances...")
+        translate_utterances(utterances, args.glossary)
+        save_checkpoint({"utterances": utterances}, ckpt_translated)
+
+    # Build speaker profiles (metadata only — no longer drives voice selection).
     profiles = build_speaker_profiles(utterances, audio_wav)
-    tts_client = _make_tts_client()
-    speaker_configs = assign_voices_and_prosody(profiles, tts_client, args.lang)
 
-    utterances = translate_utterances(utterances, args.glossary)
+    # ── Stage 5 (new): extract speaker clone samples ─────────────────────────
+    print("Extracting speaker voice samples for cloning...")
+    speaker_samples = extract_speaker_samples(
+        utterances, audio_wav, args.output_dir, min_duration=args.sample_min_duration
+    )
+
+    # ── Stage 7: free WhisperX GPU memory, then synthesize with XTTS-V2 ─────
+    _free_gpu_memory()
 
     dub_wav = os.path.join(args.output_dir, "dubbed_audio.wav")
-    build_dub_track(utterances, speaker_configs, args.lang, audio_wav, dub_wav, tts_client)
+    build_dub_track_xtts(
+        utterances,
+        speaker_samples,
+        lang_code=args.tts_lang,
+        original_audio_path=audio_wav,
+        output_path=dub_wav,
+        device=device,
+        temperature=args.tts_temperature,
+    )
 
+    # ── Stages 8–10: subtitles, mux, manifest ────────────────────────────────
     write_srt(utterances, os.path.join(args.output_dir, "subtitles.srt"))
+
     mux_video_with_audio(
         video_file, dub_wav, os.path.join(args.output_dir, "final_dubbed_video.mp4")
     )
 
     save_manifest(
-        {"speakers": speaker_configs, "utterances": utterances},
+        {"profiles": profiles, "speaker_samples": speaker_samples, "utterances": utterances},
         os.path.join(args.output_dir, "manifest.json"),
     )
 
     out = os.path.abspath(args.output_dir)
     print("\nPipeline complete. Output files:")
-    for fname in ("final_dubbed_video.mp4", "dubbed_audio.wav", "subtitles.srt", "manifest.json"):
+    for fname in (
+        "final_dubbed_video.mp4", "dubbed_audio.wav", "subtitles.srt",
+        "manifest.json", os.path.join("speaker_samples", ""),
+    ):
         fpath = os.path.join(out, fname)
-        size = f"{os.path.getsize(fpath) / 1024 / 1024:.1f} MB" if os.path.exists(fpath) else "missing"
-        print(f"  {fpath}  ({size})")
+        if os.path.isdir(fpath):
+            files = os.listdir(fpath)
+            print(f"  {fpath}  ({len(files)} speaker sample(s))")
+        elif os.path.exists(fpath):
+            size = f"{os.path.getsize(fpath) / 1024 / 1024:.1f} MB"
+            print(f"  {fpath}  ({size})")
+        else:
+            print(f"  {fpath}  (missing)")
 
 
 if __name__ == "__main__":
