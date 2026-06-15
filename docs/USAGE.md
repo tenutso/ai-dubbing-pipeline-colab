@@ -126,7 +126,7 @@ Everything lands in `--output_dir` (default `outputs/`):
 | File | Description |
 |------|-------------|
 | `final_dubbed_video.mp4` | **Main deliverable** — original video with the cloned-voice French audio track muxed in. |
-| `dubbed_audio.wav` | The mixed audio: original ducked by 15 dB + XTTS-V2 cloned voices overlaid in sync. |
+| `dubbed_audio.wav` | Voice-only dubbed audio: XTTS-V2 cloned voices placed on a silent timeline, no original audio mixed in. |
 | `subtitles.srt` | SubRip subtitles anchored to dubbed audio timing (cues appear when the cloned voice speaks). |
 | `manifest.json` | Full run metadata: speaker profiles, clone sample paths, and every utterance with original + dubbed timings + translation. |
 | `speaker_samples/` | One WAV per speaker — the reference clip used for XTTS-V2 voice cloning. |

@@ -37,7 +37,7 @@ Google Colab GPU tier**. On Colab, credentials are loaded automatically from
 - **Anchored subtitles** — SRT cue timecodes track the dubbed audio, not the original transcript, so subtitles appear exactly when the cloned voice speaks.
 - **Checkpoint / resume** — pipeline writes JSON checkpoints after each expensive stage; `--resume` skips completed stages after a Colab disconnection.
 - **GPU memory sequencing** — WhisperX models are unloaded before XTTS-V2 loads, preventing OOM on Colab's T4.
-- **24 kHz mixing** — original audio is upsampled to 24 kHz with ffmpeg before mixing; XTTS-V2 clips are never downsampled, preserving full voice bandwidth.
+- **24 kHz output** — the dubbed track is built entirely at 24 kHz (XTTS-V2's native rate); no downsampling, preserving full voice bandwidth.
 - **Final muxed MP4** with the dubbed audio track.
 - **JSON manifest** describing every speaker profile and utterance with original and dubbed timings.
 - **Speaker range forcing** — pin the diarizer to a known speaker count.
@@ -174,7 +174,7 @@ Outputs are written to `--output_dir` (default `outputs/`):
 | File / Directory | Description |
 |------------------|-------------|
 | `final_dubbed_video.mp4` | The video with the cloned-voice French audio track. |
-| `dubbed_audio.wav` | The mixed dub audio: 24 kHz, ducked original + XTTS-V2 voices. |
+| `dubbed_audio.wav` | Voice-only dub audio: XTTS-V2 cloned voices on a silent timeline (no original audio mixed in). |
 | `subtitles.srt` | French subtitles anchored to dubbed audio timing. |
 | `manifest.json` | Speaker profiles, clone sample paths, utterances with original and dubbed timings. |
 | `speaker_samples/` | One WAV per speaker — the reference clip used for XTTS-V2 voice cloning. |

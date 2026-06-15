@@ -649,9 +649,9 @@ def build_dub_track_xtts(
     lang_code : str
         ISO 639-1 language code recognised by XTTS-V2 (e.g. ``"fr"``).
     original_audio_path : str
-        Path to original audio (ducked and used as ambience bed).
+        Path to original audio — used only to determine total track duration.
     output_path : str
-        Destination path for the final mixed WAV.
+        Destination path for the final dubbed WAV.
     device : str
         ``"cuda"`` or ``"cpu"``.
     temperature : float
@@ -659,26 +659,14 @@ def build_dub_track_xtts(
     """
     tts_model = _make_xtts_model(device)
 
-    # Upsample the original audio bed to 24 kHz with ffmpeg (high-quality
-    # sinc resampling) so the XTTS-V2 clips never need to be downsampled.
-    # Mixing everything at 24 kHz preserves the full bandwidth of the cloned
-    # voices instead of losing the top 4 kHz by forcing 16 kHz pydub frames.
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        original_24k = tf.name
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", original_audio_path,
-             "-ar", str(_XTTS_SR), "-ac", "1", original_24k],
-            check=True, capture_output=True,
-        )
-        original = AudioSegment.from_wav(original_24k)
-    finally:
-        if os.path.exists(original_24k):
-            os.remove(original_24k)
+    # Read original duration to size the silent timeline correctly.
+    # The original audio is not mixed into the output — the dubbed track
+    # contains only synthesized voices with silence between utterances.
+    # The original language audio remains available as the primary video track.
+    original_duration_ms = int(sf.info(original_audio_path).duration * 1000)
 
-    ducked = original - 15  # duck original by 15 dB
     dub_layer = AudioSegment.silent(
-        duration=len(original), frame_rate=_XTTS_SR
+        duration=original_duration_ms, frame_rate=_XTTS_SR
     ).set_channels(1).set_sample_width(2)
 
     print("Synthesizing clips and building dub track...")
@@ -719,8 +707,7 @@ def build_dub_track_xtts(
         finally:
             os.remove(temp_file)
 
-    combined = ducked.overlay(dub_layer)
-    combined.export(output_path, format="wav")
+    dub_layer.export(output_path, format="wav")
 
 
 # --------------------------------------------------------------------------- #
